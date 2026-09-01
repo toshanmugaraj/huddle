@@ -25,5 +25,5 @@ npm-debug.log*
 .idea/
 
 # Ignored per request
-widget/deploy/
+deploy/
 spike-webgpu/

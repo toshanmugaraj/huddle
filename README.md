@@ -47,25 +47,6 @@ npm run build   # production bundle, dist/
 npm test        # vitest — unread-detection logic covered so far
 ```
 
-## Deploying
-
-Registryless deploy to the `gamma-context` cluster's `ess` namespace,
-pinned to node `mobtest1`, at `dune.wahatbh.com` — see the
-`deploy-mobtest1` skill for the generic version of this flow (this app is
-one of its worked examples, alongside CrewBoard).
-
-```sh
-./deploy/deploy-registryless.sh
-```
-
-Builds this repo's own `Dockerfile`, ships the image straight into
-`mobtest1`'s containerd (no registry), and `helm upgrade --install`s the
-chart at `../../Kube/chat-summary/charts/chat-summary-widget` (i.e.
-`Kube/chat-summary/...` next to this repo's own parent dir). Drop the Gemma
-weight files into `public/models/` (see that dir's README) *before*
-deploying, or bake them into the image — otherwise Prepare model will 404
-in production the same way it does locally without them.
-
 ## Known follow-ups (not yet built)
 
 - **Model-load progress** is an indeterminate spinner, not a real byte
