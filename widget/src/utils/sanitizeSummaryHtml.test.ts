@@ -12,6 +12,18 @@ describe('sanitizeSummaryHtml', () => {
     expect(sanitizeSummaryHtml(input)).toBe(input);
   });
 
+  it('renders Markdown the model writes despite being asked for HTML (the actual reported bug)', () => {
+    const out = sanitizeSummaryHtml('**Unidentified issue on iOS 26.5.1 / iPhone 17 Pro Max** *(Aug 25)*.');
+    expect(out).not.toContain('**');
+    expect(out).toContain('<strong>Unidentified issue on iOS 26.5.1 / iPhone 17 Pro Max</strong>');
+    expect(out).toContain('<em>(Aug 25)</em>');
+  });
+
+  it('renders a Markdown bullet list as <ul><li>', () => {
+    const out = sanitizeSummaryHtml('- Item one\n- Item two');
+    expect(out.replace(/\s+/g, '')).toBe('<ul><li>Itemone</li><li>Itemtwo</li></ul>');
+  });
+
   it('strips script tags entirely, including their content', () => {
     const out = sanitizeSummaryHtml('<p>hi</p><script>alert(1)</script>');
     expect(out).not.toContain('<script');

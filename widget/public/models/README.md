@@ -11,8 +11,18 @@ per-browser upload was an option).
 Files placed in this directory are a **fallback only**, used when nothing's
 been uploaded yet — `MODEL_ASSET_PATHS` in `GemmaEdgeModel.ts`:
 
-- `gemma-3n-E2B-it-int4-Web.litertlm`
-- `gemma-3n-E4B-it-int4-Web.litertlm`
+- `gemma-4-E2B-it-web.litertlm`
+- `gemma-4-E4B-it-web.litertlm`
+
+These exact filenames matter: the LiteRT-LM JS runtime currently only loads
+a small allowlist of web-packaged `.litertlm` files (general `.litertlm`
+support is on their roadmap, not here yet). As of this writing that
+allowlist is exactly these two builds, from Google's `litert-community` org:
+`litert-community/gemma-4-E2B-it-litert-lm` and
+`litert-community/gemma-4-E4B-it-litert-lm`. Any other `.litertlm` —
+including older gemma-3n builds, or a non-`-web` packaging of these same
+models — fails to load, typically as `Invalid magic number. Expected
+'LITERTLM', got '...'` even when the file is a genuine LiteRT-LM container.
 
 Whether to still bundle one here is a real choice, not just "why not both":
 - **Bundle**: every user of this deployment gets local mode working with
@@ -22,9 +32,9 @@ Whether to still bundle one here is a real choice, not just "why not both":
   *every* browser/device needs its own upload before local mode works,
   which is real per-person friction in a multi-user room.
 
-If you do bundle one: get the web-optimized (`-Web` suffix), int4-quantized
-`.litertlm` build from Google's official distribution (Kaggle Models /
-Hugging Face, under Google's Gemma terms), drop it here under exactly the
-filename above, and add a `.gitignore` entry for this directory's
-`*.litertlm` files once this becomes a real git repo — don't commit a
-multi-GB binary.
+If you do bundle one: pull the `-web.litertlm` file straight from the
+`litert-community` repo for the variant you want (Hugging Face, under
+Google's Gemma terms) — not any other mirror or repacking — drop it here
+under exactly the filename above, and add a `.gitignore` entry for this
+directory's `*.litertlm` files once this becomes a real git repo — don't
+commit a multi-GB binary.

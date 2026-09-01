@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Alert, Autocomplete, Box, Button, Card, CardContent, Stack, TextField, Typography } from '@mui/material';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Box, Button, Card, CardContent, Stack, TextField, Typography } from '@mui/material';
 import { useWidgetApi } from '@matrix-widget-toolkit/react';
 import type { InvokeArgs } from '@strands-agents/sdk';
 import { InterruptResponseContent } from '../agent/tools';
@@ -9,27 +9,33 @@ import { useSettingsStore } from '../state/settingsStore';
 import { useApiKeyStore } from '../state/apiKeyStore';
 import { useModelStore } from '../state/modelStore';
 import { useChatStore, type ChatMessage } from '../state/chatStore';
-import { useResolveRoomNames } from '../matrix/useResolveRoomNames';
+import { sanitizeSummaryHtml } from '../utils/sanitizeSummaryHtml';
 
 let nextId = 0;
 const newId = () => String(nextId++);
 
 export function Chat({ compact = false }: { compact?: boolean }) {
   const widgetApi = useWidgetApi();
+  const userId = widgetApi.widgetParameters.userId ?? '';
   const { settings } = useSettingsStore();
   const geminiApiKey = useApiKeyStore((s) => s.apiKey);
   const localModelStatus = useModelStore((s) => s.status[settings.localModel]);
-  const { messages, pendingApproval, addMessage, setPendingApproval } = useChatStore();
+  const { messages, pendingApproval, selectedRoom, addMessage, setPendingApproval, setSelectedRoom } =
+    useChatStore();
 
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
-  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
 
-  // Suggests your configured Settings rooms for convenience, but isn't
-  // limited to them — the Autocomplete below is freeSolo, so pasting any
-  // other room ID (like you just did in chat) works too.
-  const roomNames = useResolveRoomNames(widgetApi, settings.roomIds);
+  // Bottom sentinel, not a scrollTop calc against the Stack ref — scrolls
+  // correctly regardless of exactly when layout/reflow settles after a new
+  // bubble (or the approval Card) is added, which a scrollTop=scrollHeight
+  // snapshot can race. Fires on every new message and on the approval Card
+  // appearing/disappearing (both change what's visible at the bottom).
+  const bottomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [messages, pendingApproval]);
 
   if (settings.mode === 'gemini' && !geminiApiKey) {
     return <Alert severity="warning">Set a Gemini API key in Settings to use Chat.</Alert>;
@@ -55,6 +61,8 @@ export function Chat({ compact = false }: { compact?: boolean }) {
         settings.mode === 'gemini'
           ? { mode: 'gemini', apiKey: geminiApiKey, modelId: settings.geminiModel }
           : { mode: 'local', modelId: settings.localModel },
+        userId,
+        setSelectedRoom,
       );
       const result = await agent.invoke(invokeArg);
 
@@ -87,9 +95,7 @@ export function Chat({ compact = false }: { compact?: boolean }) {
     // tool calls) an unambiguous room ID instead of having to parse one out
     // of free text.
     addMessage({ id: newId(), role: 'user', text });
-    const roomContext = selectedRoomId
-      ? `[Selected room: ${roomNames[selectedRoomId] ?? selectedRoomId} (${selectedRoomId})]\n`
-      : '';
+    const roomContext = selectedRoom ? `[Selected room: ${selectedRoom.roomName} (${selectedRoom.roomId})]\n` : '';
     void runTurn(`${roomContext}${text}`);
   };
 
@@ -113,13 +119,11 @@ export function Chat({ compact = false }: { compact?: boolean }) {
       <Stack spacing={1} sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         {messages.length === 0 && (
           <Typography variant="body2" color="text.secondary">
-            {compact
-              ? selectedRoomId
-                ? `Asking about ${roomNames[selectedRoomId] ?? selectedRoomId}. Expand the widget to change rooms.`
-                : "No room selected — expand the widget to pick one, or just mention which room you mean."
-              : 'Pick a room below (or paste an ID), then ask — e.g. "what\'s been happening lately?" or ' +
-                '"tell them I\'ll be late". Without a room selected, the agent has to guess which one you ' +
-                'mean from what you type.'}
+            {selectedRoom
+              ? `Asking about ${selectedRoom.roomName}. Just mention another room by name to switch.`
+              : 'Ask something, and mention a room by name if you have one in mind — e.g. "what\'s ' +
+                'been happening in the design room?" or "tell them I\'ll be late". No room selected ' +
+                "yet, so the agent will ask which one you mean if it can't tell from what you type."}
           </Typography>
         )}
         {messages.map((m) => (
@@ -148,33 +152,22 @@ export function Chat({ compact = false }: { compact?: boolean }) {
             </CardContent>
           </Card>
         )}
+        <div ref={bottomRef} />
       </Stack>
 
       {error && <Alert severity="error">{error}</Alert>}
 
-      {/* Hidden in compact/PiP mode by request — there's no room for it in
-          a 330px-wide floating window anyway. Whatever room was selected
-          before going compact stays selected (this component doesn't
-          unmount, just re-renders without the picker); there's just no way
-          to change it until the widget is expanded again. */}
-      {!compact && (
-        <Autocomplete
-          size="small"
-          freeSolo
-          options={settings.roomIds}
-          getOptionLabel={(option) => roomNames[option] ?? option}
-          value={selectedRoomId}
-          onChange={(_, value) => setSelectedRoomId(value)}
-          onInputChange={(_, value, reason) => {
-            // freeSolo: typing/pasting a raw room ID that isn't in the
-            // suggestion list should still count as a selection, not just
-            // text the user is idly typing.
-            if (reason === 'input') setSelectedRoomId(value || null);
-          }}
-          renderInput={(params) => (
-            <TextField {...params} label="Room (optional)" placeholder="Pick or paste a room ID — helps the agent know which room you mean" />
-          )}
-        />
+      {/* No manual room picker any more — the agent sets this itself (see
+          set_selected_room in agent/tools.ts) whenever it resolves a room
+          the user named, and it's read-only display from here on. Shown in
+          compact/PiP too (unlike the old picker, which had no room for a
+          full Autocomplete in a 330px-wide floating window) — this is just
+          a text line, and it's the only way to see the current room at all
+          once compact hides the message-list empty-state hint above. */}
+      {selectedRoom && (
+        <Typography variant="caption" color="text.secondary">
+          Discussing: {selectedRoom.roomName}
+        </Typography>
       )}
 
       <Stack direction="row" spacing={1}>
@@ -202,9 +195,30 @@ function ChatBubble({ message }: { message: ChatMessage }) {
     <Box sx={{ display: 'flex', justifyContent: align }}>
       <Card variant="outlined" sx={{ maxWidth: '85%', bgcolor: message.role === 'user' ? 'action.hover' : undefined }}>
         <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
-          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', color, fontStyle: message.role === 'system' ? 'italic' : 'normal' }}>
-            {message.text}
-          </Typography>
+          {message.role === 'assistant' ? (
+            // Same reasoning as SummaryCard on the Home tab (see
+            // sanitizeSummaryHtml.ts's doc comment): both providers write
+            // Markdown in their replies regardless of what's asked, so this
+            // renders it as such instead of showing literal asterisks —
+            // DOMPurify is still doing the real XSS hardening on whatever
+            // `marked` turns it into, same as the summary cards.
+            <Box
+              sx={{
+                typography: 'body2',
+                color,
+                '& p': { m: 0, mb: 0.5, '&:last-child': { mb: 0 } },
+                '& ul, & ol': { mt: 0, mb: 0.5, pl: 3, '&:last-child': { mb: 0 } },
+              }}
+              dangerouslySetInnerHTML={{ __html: sanitizeSummaryHtml(message.text) }}
+            />
+          ) : (
+            <Typography
+              variant="body2"
+              sx={{ whiteSpace: 'pre-wrap', color, fontStyle: message.role === 'system' ? 'italic' : 'normal' }}
+            >
+              {message.text}
+            </Typography>
+          )}
         </CardContent>
       </Card>
     </Box>

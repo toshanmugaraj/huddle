@@ -5,6 +5,7 @@ import { getLocalModel } from './summarize';
 import type { GemmaModelId } from '../model/GemmaEdgeModel';
 import { buildChatTools } from './tools';
 import { attachTraceLogging } from './trace';
+import type { SelectedRoom } from '../state/chatStore';
 
 export type ChatAgentKey =
   | { mode: 'gemini'; apiKey: string; modelId: GeminiModelId }
@@ -21,7 +22,8 @@ function sameKey(a: ChatAgentKey, b: ChatAgentKey): boolean {
  * The interactive chat agent — distinct from summarize.ts's one-shot
  * per-room Agent in two ways that both matter:
  *
- * 1. It's given tools (get_room_messages / navigate_to_room / send_message),
+ * 1. It's given tools (list_rooms / get_room_id_by_name / set_selected_room /
+ *    get_room_messages / navigate_to_room / send_message),
  *    which both providers now support: Gemini via its native function
  *    calling, and GemmaEdgeModel by translating LiteRT-LM's own tool-calling
  *    protocol into the same Strands event stream (see that file's class
@@ -36,7 +38,12 @@ function sameKey(a: ChatAgentKey, b: ChatAgentKey): boolean {
  */
 let cached: { key: ChatAgentKey; agent: Agent } | undefined;
 
-export function getChatAgent(widgetApi: WidgetApi, key: ChatAgentKey): Agent {
+export function getChatAgent(
+  widgetApi: WidgetApi,
+  key: ChatAgentKey,
+  userId: string,
+  onSelectRoom: (room: SelectedRoom) => void,
+): Agent {
   if (cached && sameKey(cached.key, key)) {
     return cached.agent;
   }
@@ -44,13 +51,19 @@ export function getChatAgent(widgetApi: WidgetApi, key: ChatAgentKey): Agent {
   const model = key.mode === 'gemini' ? createGeminiModel(key.apiKey, key.modelId) : getLocalModel(key.modelId);
 
   const agent = new Agent({
-    name: 'chat-summary-assistant',
+    name: 'huddle-assistant',
     model,
-    tools: buildChatTools(widgetApi),
+    tools: buildChatTools(widgetApi, userId, onSelectRoom),
     systemPrompt:
       'You are a helpful assistant embedded in a Matrix chat widget. You can read recent room ' +
       'messages, navigate the user to a room, and send a message on their behalf (send_message ' +
       'always pauses for the user to approve the exact text before anything is actually sent). ' +
+      'There is no manual room picker in this UI any more — every room-specific tool needs a room ' +
+      'ID, not a name, so when the user names or switches to a room and no "[Selected room: ...]" ' +
+      'context line already gives you its ID, call get_room_id_by_name first (or list_rooms if you ' +
+      'need to see what rooms are available at all), then call set_selected_room with the resolved ' +
+      'ID so it stays the active room for later turns too. If the name comes back ambiguous or with ' +
+      'no match, ask the user to clarify instead of guessing. ' +
       'Keep replies concise.',
   });
 

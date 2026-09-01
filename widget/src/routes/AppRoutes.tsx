@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Box, IconButton, Snackbar, Tab, Tabs, Tooltip } from '@mui/material';
 import { useWidgetApi } from '@matrix-widget-toolkit/react';
 import { Home } from './Home';
@@ -21,15 +21,32 @@ export function AppRoutes() {
   // the widget's side), so `pinned` is this widget's own best guess: it
   // can drift if the user unpins from Element's native UI instead of this
   // button, with no way for us to notice.
+  //
+  // One drift case IS fixable, and matters a lot more than it looks:
+  // Element re-parents the widget's iframe into its separate floating PiP
+  // container when pinning, which remounts this component — resetting
+  // `pinned` back to its `useState(false)` default right as we land in the
+  // one place it's actually true. Left alone, the button then shows "Pin"
+  // instead of "Unpin" while already pinned, so a click re-requests
+  // `setAlwaysOnScreen(true)` (already true, so nothing visibly happens)
+  // instead of the unpin the user is actually going for — this is the "pin
+  // won't unpin again in PiP" bug. `compact` is a real signal, not a guess
+  // (it reads the iframe's actual size), and compact only ever happens via
+  // Element's PiP, so seeing it means we ARE pinned — self-heal from it.
+  useEffect(() => {
+    if (compact) setPinned(true);
+  }, [compact]);
+
   const togglePin = async () => {
     const next = !pinned;
     try {
-      const success = await rawWidgetApi(widgetApi).setAlwaysOnScreen(next);
-      if (success) {
-        setPinned(next);
-      } else {
-        setPinError("Element didn't confirm the pin change — it may not support always-on-screen widgets here.");
-      }
+      // Not gating on the resolved `success` boolean any more — some hosts
+      // apply the change but don't reliably report it back, which made this
+      // surface a "didn't confirm" warning even when pinning had actually
+      // worked. A thrown error (below) is still a real signal; a falsy
+      // `success` on its own isn't reliable enough to warn about.
+      await rawWidgetApi(widgetApi).setAlwaysOnScreen(next);
+      setPinned(next);
     } catch (err) {
       setPinError(err instanceof Error ? err.message : String(err));
     }

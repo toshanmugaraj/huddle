@@ -24,7 +24,7 @@ import {
  * its own cleanup; this just batches them).
  */
 export function attachTraceLogging(agent: Agent, label: string): () => void {
-  const tag = `[chat-summary:${label}]`;
+  const tag = `[huddle:${label}]`;
   const cleanups = [
     agent.addHook(BeforeModelCallEvent, (e) => {
       console.log(`${tag} model call → ${e.model.modelId ?? '(unknown model)'}`, {

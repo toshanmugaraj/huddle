@@ -1,10 +1,10 @@
 import { create } from 'zustand';
-import { DEFAULT_SETTINGS, type ChatSummarySettings } from '../matrix/settingsSync';
+import { DEFAULT_SETTINGS, type HuddleSettings } from '../matrix/settingsSync';
 
 interface SettingsState {
-  settings: ChatSummarySettings;
+  settings: HuddleSettings;
   loaded: boolean;
-  setSettings: (settings: ChatSummarySettings) => void;
+  setSettings: (settings: HuddleSettings) => void;
   setLoaded: (loaded: boolean) => void;
 }
 

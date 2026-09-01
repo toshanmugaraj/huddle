@@ -11,7 +11,7 @@ interface ModelState {
 }
 
 export const useModelStore = create<ModelState>((set) => ({
-  status: { 'gemma-3n-e2b': 'idle', 'gemma-3n-e4b': 'idle' },
+  status: { 'gemma-4-e2b': 'idle', 'gemma-4-e4b': 'idle' },
   error: {},
   setStatus: (modelId, status, error) =>
     set((state) => ({

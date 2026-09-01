@@ -8,7 +8,7 @@ import { buildCapabilities } from './capabilities';
 export const widgetApiPromise = WidgetApiImpl.create({
   capabilities: buildCapabilities(),
   // This widget's whole design depends on the WebGPU/LiteRT-LM runtime
-  // living inside a real Element iframe (see spike-webgpu) — it has no
-  // meaningful standalone mode.
+  // living inside a real Element iframe — it has no meaningful standalone
+  // mode.
   supportStandalone: false,
 });

@@ -17,7 +17,6 @@ import {
   type Message as LmMessage,
   type ContentPart as LmContentPart,
   type Tool as LmTool,
-  type FunctionDeclaration as LmFunctionDeclaration,
   type Schema as LmSchema,
   type ToolCall as LmToolCall,
   type ToolResponsePart as LmToolResponsePart,
@@ -25,11 +24,39 @@ import {
 } from '@litert-lm/core';
 import { getStoredModelFile } from './modelStorage';
 
-export type GemmaModelId = 'gemma-3n-e2b' | 'gemma-3n-e4b';
+/**
+ * The LiteRT-LM JS runtime (`@litert-lm/core`) currently only knows how to
+ * load a small, explicit allowlist of web-packaged `.litertlm` files — NOT
+ * arbitrary `.litertlm` files in general (that's coming later per upstream,
+ * but isn't here yet). As of this runtime version that allowlist is exactly
+ * these two, both published under the `litert-community` org:
+ *  - `gemma-4-E2B-it-web.litertlm` from `litert-community/gemma-4-E2B-it-litert-lm`
+ *  - `gemma-4-E4B-it-web.litertlm` from `litert-community/gemma-4-E4B-it-litert-lm`
+ * Any other `.litertlm` — including a gemma-3n build, or a non-`-web`
+ * packaging of these same models — fails to load, typically surfacing as
+ * `Invalid magic number. Expected 'LITERTLM', got '...'` even though the
+ * file itself may be a perfectly valid LiteRT-LM container.
+ */
+export type GemmaModelId = 'gemma-4-e2b' | 'gemma-4-e4b';
 
 export interface GemmaModelConfig extends BaseModelConfig {
   modelId?: GemmaModelId;
 }
+
+/**
+ * Default total context budget (input + output tokens together) handed to
+ * `mainExecutorSettings.maxNumTokens` below when `config.maxTokens` isn't
+ * set — which is always, currently; nothing in this app overrides it yet.
+ * Previously 1024, a MediaPipe-era leftover nobody revisited after the
+ * LiteRT-LM migration: far too small for real usage (surfaces as the
+ * runtime's own "Input token ids are too long" error the moment a room's
+ * unread backlog — or a chat history — pushes past it, e.g. a single busy
+ * day easily runs ~2000+ tokens). 8192 matches the value LiteRT-LM's own
+ * quickstart (`@litert-lm/core`'s README) uses. Exported so summarize.ts
+ * can size its own transcript-truncation safety net against the same
+ * number rather than duplicating a hardcoded budget.
+ */
+export const DEFAULT_MAX_TOKENS = 8192;
 
 /**
  * Fallback location for each variant's weight file if the user hasn't
@@ -40,22 +67,21 @@ export interface GemmaModelConfig extends BaseModelConfig {
  * works without every user having to re-upload it.
  */
 const MODEL_ASSET_PATHS: Record<GemmaModelId, string> = {
-  'gemma-3n-e2b': '/models/gemma-3n-E2B-it-int4-Web.litertlm',
-  'gemma-3n-e4b': '/models/gemma-3n-E4B-it-int4-Web.litertlm',
+  'gemma-4-e2b': '/models/gemma-4-E2B-it-web.litertlm',
+  'gemma-4-e4b': '/models/gemma-4-E4B-it-web.litertlm',
 };
 
 export const GEMMA_MODEL_OPTIONS: { id: GemmaModelId; label: string; note: string }[] = [
-  { id: 'gemma-3n-e2b', label: 'Gemma 3n E2B (fast)', note: 'Smaller download, quicker summaries, lower quality.' },
-  { id: 'gemma-3n-e4b', label: 'Gemma 3n E4B (quality)', note: 'Larger download, slower, better summaries.' },
+  { id: 'gemma-4-e2b', label: 'Gemma 4 E2B (fast)', note: 'Smaller download, quicker summaries, lower quality.' },
+  { id: 'gemma-4-e4b', label: 'Gemma 4 E4B (quality)', note: 'Larger download, slower, better summaries.' },
 ];
 
 /**
  * Strands `Model` implementation backed by Google's LiteRT-LM Web runtime
  * (`@litert-lm/core`), running a quantized Gemma model entirely inside this
- * widget's iframe via WebGPU (confirmed viable in the WebGPU/iframe spike —
- * see ../../spike-webgpu). Per-invocation there is no network call at all —
- * only the one-time model asset fetch (weights, not message content) the
- * first time a given variant is used.
+ * widget's iframe via WebGPU. Per-invocation there is no network call at
+ * all — only the one-time model asset fetch (weights, not message content)
+ * the first time a given variant is used.
  *
  * Replaces the earlier MediaPipe `LlmInference`-based implementation. Two
  * things LiteRT-LM's `Engine`/`Conversation` API gets natively that MediaPipe
@@ -108,7 +134,7 @@ export class GemmaEdgeModel extends Model<GemmaModelConfig> {
 
   constructor(config: GemmaModelConfig = {}) {
     super();
-    this.config = { modelId: 'gemma-3n-e2b', ...config };
+    this.config = { modelId: 'gemma-4-e2b', ...config };
   }
 
   updateConfig(modelConfig: GemmaModelConfig): void {
@@ -141,7 +167,7 @@ export class GemmaEdgeModel extends Model<GemmaModelConfig> {
 
   private getEngine(): Promise<Engine> {
     if (!this.enginePromise) {
-      const modelId = this.config.modelId ?? 'gemma-3n-e2b';
+      const modelId = this.config.modelId ?? 'gemma-4-e2b';
       this.enginePromise = (async () => {
         // Prefer a user-uploaded copy (modelStorage.ts, OPFS) over the
         // bundled path — see that module's comment for why: keeps the
@@ -154,7 +180,7 @@ export class GemmaEdgeModel extends Model<GemmaModelConfig> {
           model: uploaded ?? MODEL_ASSET_PATHS[modelId],
           // Total context budget (input + output), same role this played
           // against MediaPipe's LlmInference `maxTokens` baseOption.
-          mainExecutorSettings: { maxNumTokens: this.config.maxTokens ?? 1024 },
+          mainExecutorSettings: { maxNumTokens: this.config.maxTokens ?? DEFAULT_MAX_TOKENS },
         });
         // Backend defaults to GPU_ARTISAN (WebGPU) when unspecified, and
         // the WASM runtime itself lazy-loads from LiteRT-LM's own
@@ -189,6 +215,23 @@ export class GemmaEdgeModel extends Model<GemmaModelConfig> {
     if (systemText) prefaceMessages.push({ role: 'system', content: systemText });
     prefaceMessages.push(...historyMessages);
 
+    // NOTE on `Failed to apply template: undefined value (in template:NN)`:
+    // this is NOT caused by the shape of what we send — reverted an earlier
+    // attempt at a fix here that assumed a lone `role: 'system'` preface
+    // message (no history after it, true on every conversation's first
+    // turn) was the trigger; it wasn't; the crash reproduces identically
+    // with or without a system message at all. It's a confirmed upstream
+    // bug: LiteRT-LM's on-device template engine (an early-preview,
+    // deliberately minimal Jinja-like interpreter running inside the WASM
+    // binary) can't evaluate constructs Gemma 4's *official* chat template
+    // uses — reported for this exact model/error at
+    // https://github.com/google-ai-edge/LiteRT-LM/issues/2078 (still open,
+    // no fix as of this writing). The only workaround documented there is
+    // bypassing template application entirely via the low-level
+    // Session.runPrefill/runDecode API with a hand-formatted prompt string
+    // instead of Conversation — a real rewrite (loses this class's
+    // streaming and tool-calling translation both), not a one-line patch,
+    // so not done here without deciding that trade-off is worth it first.
     const conversation = await engine.createConversation({
       preface: {
         ...(prefaceMessages.length > 0 && { messages: prefaceMessages }),
@@ -288,12 +331,29 @@ function textPartsOf(content: string | LmContentPart[] | undefined): string[] {
  * runtime is the one that has to tolerate (or ignore) whatever extra
  * JSON-Schema keywords a tool's zod schema happens to produce, same as it
  * already has to for any other JS caller.
+ *
+ * Wrapped in `{ type: 'function', function: {...} }` rather than sent as a
+ * bare `FunctionDeclaration` — `Tool`'s doc comment claims the runtime
+ * "accepts both wrapped and unwrapped formats", but Gemma 4's own chat
+ * template (verified against the actual published
+ * `litert-community/gemma-4-*-it-litert-lm` `chat_template.jinja`, identical
+ * for both E2B and E4B) only implements the wrapped one:
+ * `format_function_declaration` indexes `tool_data['function']['name']`
+ * unconditionally. Sending the bare shape means `tool_data['function']` is
+ * undefined, and `['name']` on that is exactly what threw `Failed to apply
+ * template: undefined value` (that macro's first line) the moment any tool
+ * declarations were in play — i.e. every Chat-tab call in local mode, since
+ * that's the one Agent built with `tools:` (chatAgent.ts); summarize.ts's
+ * Agent has none, so it never hit this particular path.
  */
-function toolSpecToLm(spec: ToolSpec): LmFunctionDeclaration {
+function toolSpecToLm(spec: ToolSpec): LmTool {
   return {
-    name: spec.name,
-    description: spec.description,
-    parameters: spec.inputSchema as unknown as LmSchema | undefined,
+    type: 'function',
+    function: {
+      name: spec.name,
+      description: spec.description,
+      parameters: spec.inputSchema as unknown as LmSchema | undefined,
+    },
   };
 }
 

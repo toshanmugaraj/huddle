@@ -1,9 +1,15 @@
-# Chat Summary widget
+# Huddle
 
-A Nordeck-toolkit Matrix widget that summarizes unread messages across
+A Matrix widget that summarizes unread messages across
 rooms you choose, entirely on-device — no backend, no network call carries
-message content anywhere. See `../spike-webgpu` for the WebGPU/iframe
-feasibility check this design is built on.
+message content anywhere. This design assumes WebGPU is available and
+usable from inside a real Element widget iframe (confirmed by hand before
+this was built); there's no fallback path for an environment where it
+isn't.
+
+(Formerly "Chat Summary" — renamed to Huddle. The `io.github.chatsummary.*`
+state event type and other internal identifiers below are unchanged on
+purpose; see the PR/commit that did the rename for why.)
 
 ## How it works
 

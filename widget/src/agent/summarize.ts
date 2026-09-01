@@ -1,7 +1,7 @@
 import { Agent } from '@strands-agents/sdk';
-import { GemmaEdgeModel, type GemmaModelId } from '../model/GemmaEdgeModel';
+import { DEFAULT_MAX_TOKENS, GemmaEdgeModel, type GemmaModelId } from '../model/GemmaEdgeModel';
 import { createGeminiModel, type GeminiModelId } from '../model/geminiModel';
-import type { ChatSummarySettings } from '../matrix/settingsSync';
+import type { HuddleSettings } from '../matrix/settingsSync';
 import type { UnreadMessage } from '../matrix/unread';
 import { attachTraceLogging } from './trace';
 
@@ -50,7 +50,7 @@ export class MissingApiKeyError extends Error {
 export async function summarizeRoom(
   roomName: string,
   messages: UnreadMessage[],
-  settings: Pick<ChatSummarySettings, 'mode' | 'localModel' | 'geminiModel' | 'instruction'>,
+  settings: Pick<HuddleSettings, 'mode' | 'localModel' | 'geminiModel' | 'instruction'>,
   geminiApiKey: string,
 ): Promise<string> {
   const model =
@@ -62,13 +62,52 @@ export async function summarizeRoom(
         })();
 
   const agent = new Agent({
-    name: 'chat-summary',
+    name: 'huddle-summarize',
     model,
     systemPrompt: settings.instruction,
   });
   attachTraceLogging(agent, `summarize:${roomName}`);
 
-  const transcript = messages.map((m) => `${m.sender}: ${m.body}`).join('\n');
+  // Only local mode has a fixed, client-side context budget to worry about
+  // (GemmaEdgeModel's maxNumTokens, input+output shared — see
+  // DEFAULT_MAX_TOKENS) — Gemini's is server-side and far larger, not a
+  // realistic concern for one room's unread backlog. A genuinely busy day
+  // can still blow past even the 8192 default outright (surfaced as the
+  // runtime's own "Input token ids are too long" error), so trim to the
+  // most recent messages that fit rather than let that happen.
+  const transcript =
+    settings.mode === 'local' ? buildTruncatedTranscript(messages) : buildTranscript(messages);
   const result = await agent.invoke(`Room: ${roomName}\n\nUnread messages:\n${transcript}`);
   return result.toString().trim();
+}
+
+function buildTranscript(messages: UnreadMessage[]): string {
+  return messages.map((m) => `${m.sender}: ${m.body}`).join('\n');
+}
+
+// Rough chars-per-token estimate — same order of magnitude GemmaEdgeModel
+// itself uses for its own usage accounting (char-count / 4). Doesn't need to
+// be exact, just needs to land comfortably under the real cutoff.
+const CHARS_PER_TOKEN_ESTIMATE = 4;
+// Headroom left for the system instruction, the "Room: ...\n\nUnread
+// messages:\n" wrapper, and the model's own reply — all of which share the
+// same budget as the transcript.
+const RESERVED_TOKENS = 1024;
+
+function buildTruncatedTranscript(messages: UnreadMessage[]): string {
+  const budgetChars = Math.max(0, DEFAULT_MAX_TOKENS - RESERVED_TOKENS) * CHARS_PER_TOKEN_ESTIMATE;
+  const kept: string[] = [];
+  let used = 0;
+  let omitted = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const line = `${messages[i].sender}: ${messages[i].body}`;
+    if (used + line.length + 1 > budgetChars) {
+      omitted = i + 1;
+      break;
+    }
+    kept.unshift(line);
+    used += line.length + 1;
+  }
+  if (omitted === 0) return kept.join('\n');
+  return `[${omitted} earlier message(s) omitted — too long for local mode's context window]\n${kept.join('\n')}`;
 }

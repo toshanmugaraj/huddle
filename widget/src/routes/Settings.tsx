@@ -20,7 +20,7 @@ import { useWidgetApi } from '@matrix-widget-toolkit/react';
 import {
   loadSettings,
   saveSettings,
-  type ChatSummarySettings,
+  type HuddleSettings,
   type SummarizationMode,
 } from '../matrix/settingsSync';
 import { useResolveRoomNames } from '../matrix/useResolveRoomNames';
@@ -104,7 +104,7 @@ export function Settings() {
 
   const roomNames = useResolveRoomNames(widgetApi, settings.roomIds);
 
-  const patch = (next: Partial<ChatSummarySettings>) => setSettings({ ...settings, ...next });
+  const patch = (next: Partial<HuddleSettings>) => setSettings({ ...settings, ...next });
 
   const addRoom = () => {
     const roomId = newRoomId.trim();
