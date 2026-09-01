@@ -1,0 +1,12 @@
+# Excluded from the Docker build context — the build stage runs its own
+# `npm ci` and `npm run build`, so the host's node_modules/dist are pure
+# waste to ship. Matters more than usual here: public/models/*.litertlm is
+# multi-GB and unavoidable in the context, no reason to add another 500MB+
+# on top of it every build.
+node_modules
+dist
+
+# Local-only, never needed inside the image.
+.git
+*.log
+.DS_Store
