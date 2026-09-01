@@ -16,13 +16,11 @@ export const SETTINGS_EVENT_TYPE = 'io.github.chatsummary.settings';
  */
 export function buildCapabilities(): Array<WidgetEventCapability | Capability> {
   return [
-    // Unread detection: message content plus the user's own read marker,
-    // across every room the user has joined — not just this widget's own
-    // room. The AnyRoom timeline capability is checked first and gates both
-    // of the reads below (see the nordeck-widget skill's capability notes).
+    // Message content across every room the user has joined — not just
+    // this widget's own room — for today's-messages detection (see
+    // matrix/messages.ts) and the chat tab's get_room_messages tool.
     `org.matrix.msc2762.timeline:${Symbols.AnyRoom}`,
     WidgetEventCapability.forRoomEvent(EventDirection.Receive, 'm.room.message'),
-    WidgetEventCapability.forRoomAccountData(EventDirection.Receive, 'm.fully_read'),
 
     // Room metadata for the room picker and summary cards.
     WidgetEventCapability.forStateEvent(EventDirection.Receive, 'm.room.name'),

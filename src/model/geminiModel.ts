@@ -17,8 +17,8 @@ export const GEMINI_MODEL_OPTIONS: { id: GeminiModelId; label: string; note: str
 /**
  * Builds a Strands `Model` backed by Google's hosted Gemini API
  * (`@strands-agents/sdk/models/google`, which wraps `@google/genai`).
- * Unlike GemmaEdgeModel, this sends the prompt (i.e. the room's unread
- * messages) to Google's servers — that's the whole point of offering it as
+ * Unlike GemmaEdgeModel, this sends the prompt (i.e. the room's messages
+ * from today) to Google's servers — that's the whole point of offering it as
  * an alternative to the on-device model, not an oversight. See Settings'
  * copy for the user-facing warning; this file doesn't gate on consent
  * itself, the caller does.

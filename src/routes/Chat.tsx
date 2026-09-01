@@ -208,6 +208,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
                 color,
                 '& p': { m: 0, mb: 0.5, '&:last-child': { mb: 0 } },
                 '& ul, & ol': { mt: 0, mb: 0.5, pl: 3, '&:last-child': { mb: 0 } },
+                '& li': { mb: 1, '&:last-child': { mb: 0 } },
               }}
               dangerouslySetInnerHTML={{ __html: sanitizeSummaryHtml(message.text) }}
             />

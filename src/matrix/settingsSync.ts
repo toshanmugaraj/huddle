@@ -37,9 +37,13 @@ export const DEFAULT_SETTINGS: HuddleSettings = {
   // produce is both simpler to write and more reliable than fighting that
   // bias — see that file's comment for the fuller story.
   instruction:
-    'Summarize the unread messages below in 3-5 concise bullet points. Call out any direct ' +
-    'questions or action items addressed to me. Format the response as simple Markdown: a bullet ' +
-    'list (-), **bold** for emphasis, no headings, no links, no code blocks.',
+    "You are an expert technical documentation assistant summarizing today's messages in this " +
+    'room. Ignore off-topic banter, jokes, or ambient greetings. Group related discussion into ' +
+    'clear, thematic bullet points rather than a chronological recap. Call out any direct ' +
+    'questions or action items addressed to me. Format the response as simple Markdown: start ' +
+    'with "- Date: " followed by the exact "Date" given above (never guess a date yourself), ' +
+    'then one "- Topic: summary" bullet per topic, with a blank line between each bullet for ' +
+    'extra spacing. Bold for emphasis, no headings, no links, no code blocks.',
 };
 
 // Settings are stored as a state event in the widget's own room, keyed by

@@ -2,7 +2,7 @@ import { Agent } from '@strands-agents/sdk';
 import { DEFAULT_MAX_TOKENS, GemmaEdgeModel, type GemmaModelId } from '../model/GemmaEdgeModel';
 import { createGeminiModel, type GeminiModelId } from '../model/geminiModel';
 import type { HuddleSettings } from '../matrix/settingsSync';
-import type { UnreadMessage } from '../matrix/unread';
+import type { RoomMessage } from '../matrix/messages';
 import { attachTraceLogging } from './trace';
 
 // One GemmaEdgeModel per variant, cached for the widget's lifetime — the
@@ -49,7 +49,7 @@ export class MissingApiKeyError extends Error {
 
 export async function summarizeRoom(
   roomName: string,
-  messages: UnreadMessage[],
+  messages: RoomMessage[],
   settings: Pick<HuddleSettings, 'mode' | 'localModel' | 'geminiModel' | 'instruction'>,
   geminiApiKey: string,
 ): Promise<string> {
@@ -71,17 +71,31 @@ export async function summarizeRoom(
   // Only local mode has a fixed, client-side context budget to worry about
   // (GemmaEdgeModel's maxNumTokens, input+output shared — see
   // DEFAULT_MAX_TOKENS) — Gemini's is server-side and far larger, not a
-  // realistic concern for one room's unread backlog. A genuinely busy day
-  // can still blow past even the 8192 default outright (surfaced as the
-  // runtime's own "Input token ids are too long" error), so trim to the
-  // most recent messages that fit rather than let that happen.
+  // realistic concern for one room's worth of a day's messages. A
+  // genuinely busy day can still blow past even the 8192 default outright
+  // (surfaced as the runtime's own "Input token ids are too long" error),
+  // so trim to the most recent messages that fit rather than let that
+  // happen.
   const transcript =
     settings.mode === 'local' ? buildTruncatedTranscript(messages) : buildTranscript(messages);
-  const result = await agent.invoke(`Room: ${roomName}\n\nUnread messages:\n${transcript}`);
+  // Neither model has real-world clock access (Gemma runs fully offline;
+  // Gemini isn't told the date either), so an instruction asking for a
+  // "Date" field has nothing to go on but a guess unless it's handed the
+  // actual date here — same local-calendar-day boundary getTodayMessages
+  // uses, not toISOString()'s UTC date, which can be a day off near
+  // midnight in most timezones.
+  const result = await agent.invoke(
+    `Date: ${todayDateLabel()}\nRoom: ${roomName}\n\nMessages from today:\n${transcript}`,
+  );
   return result.toString().trim();
 }
 
-function buildTranscript(messages: UnreadMessage[]): string {
+function todayDateLabel(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function buildTranscript(messages: RoomMessage[]): string {
   return messages.map((m) => `${m.sender}: ${m.body}`).join('\n');
 }
 
@@ -89,12 +103,12 @@ function buildTranscript(messages: UnreadMessage[]): string {
 // itself uses for its own usage accounting (char-count / 4). Doesn't need to
 // be exact, just needs to land comfortably under the real cutoff.
 const CHARS_PER_TOKEN_ESTIMATE = 4;
-// Headroom left for the system instruction, the "Room: ...\n\nUnread
-// messages:\n" wrapper, and the model's own reply — all of which share the
-// same budget as the transcript.
+// Headroom left for the system instruction, the "Date: ...\nRoom:
+// ...\n\nMessages from today:\n" wrapper, and the model's own reply — all
+// of which share the same budget as the transcript.
 const RESERVED_TOKENS = 1024;
 
-function buildTruncatedTranscript(messages: UnreadMessage[]): string {
+function buildTruncatedTranscript(messages: RoomMessage[]): string {
   const budgetChars = Math.max(0, DEFAULT_MAX_TOKENS - RESERVED_TOKENS) * CHARS_PER_TOKEN_ESTIMATE;
   const kept: string[] = [];
   let used = 0;

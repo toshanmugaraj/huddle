@@ -1,6 +1,6 @@
 # Huddle
 
-A Matrix widget that summarizes unread messages across
+A Matrix widget that summarizes today's messages across
 rooms you choose, entirely on-device — no backend, no network call carries
 message content anywhere. This design assumes WebGPU is available and
 usable from inside a real Element widget iframe (confirmed by hand before
@@ -16,13 +16,13 @@ purpose; see the PR/commit that did the rename for why.)
 - **Settings**: add rooms by ID/alias, pick a Gemma variant, edit the
   summary instruction. Persisted as a state event in the widget's own room
   (`io.github.chatsummary.settings`, state-keyed per user).
-- **Home**: hit **Sync** to walk your selected rooms one at a time, compute
-  each room's unread messages (see `src/matrix/unread.ts`), and summarize
-  them with a Strands `Agent` (`src/agent/summarize.ts`) backed by a custom
-  `Model` (`src/model/GemmaEdgeModel.ts`) that runs a quantized Gemma model
-  in-browser via Google's LiteRT-LM Web runtime (`@litert-lm/core`, WebGPU).
-  Summaries live in an in-memory store (`src/state/summaryStore.ts`) — a
-  reload clears them, by design.
+- **Home**: hit **Sync** to walk your selected rooms one at a time, gather
+  each room's messages from today (see `src/matrix/messages.ts`), and
+  summarize them with a Strands `Agent` (`src/agent/summarize.ts`) backed by
+  a custom `Model` (`src/model/GemmaEdgeModel.ts`) that runs a quantized
+  Gemma model in-browser via Google's LiteRT-LM Web runtime
+  (`@litert-lm/core`, WebGPU). Summaries live in an in-memory store
+  (`src/state/summaryStore.ts`) — a reload clears them, by design.
 
 ## Before it'll actually summarize anything
 
@@ -44,7 +44,7 @@ Custom).
 
 ```sh
 npm run build   # production bundle, dist/
-npm test        # vitest — unread-detection logic covered so far
+npm test        # vitest — today's-messages filtering logic covered so far
 ```
 
 ## Known follow-ups (not yet built)
@@ -61,5 +61,5 @@ npm test        # vitest — unread-detection logic covered so far
 - **Mobile Element** is out of scope — WebGPU + a multi-GB local model
   isn't realistic in a mobile webview; there's no feature-detect banner
   for that yet.
-- Only the `getUnreadMessages` logic has tests so far; the screens and
+- Only the `getTodayMessages` logic has tests so far; the screens and
   `GemmaEdgeModel` don't.

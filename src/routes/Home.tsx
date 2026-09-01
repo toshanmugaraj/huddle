@@ -4,7 +4,7 @@ import { useWidgetApi } from '@matrix-widget-toolkit/react';
 import { loadSettings } from '../matrix/settingsSync';
 import { getRoomName } from '../matrix/rooms';
 import { useResolveRoomNames } from '../matrix/useResolveRoomNames';
-import { getUnreadMessages } from '../matrix/unread';
+import { getTodayMessages } from '../matrix/messages';
 import { summarizeRoom, prepareModel } from '../agent/summarize';
 import { useSettingsStore } from '../state/settingsStore';
 import { useSummaryStore, type RoomSummary } from '../state/summaryStore';
@@ -63,23 +63,22 @@ export function Home() {
 
         try {
           const roomName = await getRoomName(widgetApi, roomId);
-          const previousSync = summaries[roomId]?.syncedAt;
-          const unread = await getUnreadMessages(widgetApi, roomId, previousSync);
+          const messages = await getTodayMessages(widgetApi, roomId);
 
-          if (unread.length === 0) {
+          if (messages.length === 0) {
             setSummary(roomId, {
               roomName,
-              status: 'no-unread',
+              status: 'no-messages',
               syncedAt: Date.now(),
             });
             continue;
           }
 
-          const summary = await summarizeRoom(roomName, unread, settings, geminiApiKey);
+          const summary = await summarizeRoom(roomName, messages, settings, geminiApiKey);
           setSummary(roomId, {
             roomName,
             summary,
-            unreadCount: unread.length,
+            messageCount: messages.length,
             status: 'done',
             syncedAt: Date.now(),
           });
@@ -155,21 +154,32 @@ function SummaryCard({
           <>
             {/* summary.summary is model output sanitized to a tight tag
                 allowlist by sanitizeSummaryHtml — see that file's comment
-                for why this can't just be dangerouslySetInnerHTML'd as-is. */}
+                for why this can't just be dangerouslySetInnerHTML'd as-is.
+                '& li' margin is the reliable half of the instruction's
+                "blank line between bullets" ask — models don't consistently
+                emit the blank line that would make marked produce a loose
+                list (same unreliability sanitizeSummaryHtml.ts's own doc
+                comment already found with HTML-vs-Markdown compliance), so
+                this doesn't depend on that to actually show up. */}
             <Box
-              sx={{ mt: 1, '& p': { m: 0, mb: 0.5 }, '& ul': { mt: 0, mb: 0.5, pl: 3 } }}
+              sx={{
+                mt: 1,
+                '& p': { m: 0, mb: 0.5 },
+                '& ul': { mt: 0, mb: 0.5, pl: 3 },
+                '& li': { mb: 1, '&:last-child': { mb: 0 } },
+              }}
               dangerouslySetInnerHTML={{ __html: sanitizeSummaryHtml(summary.summary) }}
             />
             <Typography variant="caption" color="text.secondary">
-              {summary.unreadCount} unread message{summary.unreadCount === 1 ? '' : 's'} · synced{' '}
+              {summary.messageCount} message{summary.messageCount === 1 ? '' : 's'} today · synced{' '}
               {summary.syncedAt && new Date(summary.syncedAt).toLocaleTimeString()}
             </Typography>
           </>
         )}
 
-        {summary?.status === 'no-unread' && (
+        {summary?.status === 'no-messages' && (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            No unread messages.
+            No messages today.
           </Typography>
         )}
 
@@ -195,8 +205,8 @@ function StatusChip({ status }: { status: RoomSummary['status'] }) {
       return <Chip size="small" color="warning" label="Summarizing…" />;
     case 'done':
       return <Chip size="small" color="success" label="Done" />;
-    case 'no-unread':
-      return <Chip size="small" label="Up to date" />;
+    case 'no-messages':
+      return <Chip size="small" label="No messages" />;
     case 'error':
       return <Chip size="small" color="error" label="Error" />;
     default:

@@ -1,12 +1,12 @@
 import { create } from 'zustand';
 
-export type SummaryStatus = 'idle' | 'summarizing' | 'done' | 'no-unread' | 'error';
+export type SummaryStatus = 'idle' | 'summarizing' | 'done' | 'no-messages' | 'error';
 
 export interface RoomSummary {
   roomId: string;
   roomName: string;
   summary: string;
-  unreadCount: number;
+  messageCount: number;
   syncedAt?: number;
   status: SummaryStatus;
   error?: string;

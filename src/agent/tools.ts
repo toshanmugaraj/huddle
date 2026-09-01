@@ -1,7 +1,7 @@
 import { tool, InterruptResponseContent, type Interrupt } from '@strands-agents/sdk';
 import { z } from 'zod';
 import type { WidgetApi } from '@matrix-widget-toolkit/api';
-import { getRecentMessages } from '../matrix/unread';
+import { getRecentMessages } from '../matrix/messages';
 import { getRoomName } from '../matrix/rooms';
 import { loadSettings } from '../matrix/settingsSync';
 import type { SelectedRoom } from '../state/chatStore';
@@ -121,7 +121,8 @@ export function buildChatTools(widgetApi: WidgetApi, userId: string, onSelectRoo
   const getRoomMessages = tool({
     name: 'get_room_messages',
     description:
-      'Reads the most recent messages in a Matrix room (not just unread ones) — use this for follow-up questions that need more context than what was already summarized.',
+      'Reads the most recent messages in a Matrix room, regardless of date — use this for follow-up ' +
+      "questions that need more history than what was already summarized (Sync only covers today).",
     inputSchema: z.object({
       roomId: z.string().describe('The room ID, e.g. "!abc123:example.com".'),
       limit: z.number().int().min(1).max(100).default(20).describe('How many recent messages to fetch.'),

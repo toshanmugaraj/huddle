@@ -285,7 +285,7 @@ export function Settings() {
         ) : (
           <>
             <Alert severity="warning" sx={{ mb: 1 }}>
-              In this mode, the text of your unread messages is sent to Google's Gemini API to be
+              In this mode, the text of today's messages is sent to Google's Gemini API to be
               summarized — unlike the on-device option, message content does leave your browser.
               Only turn this on for rooms/content you're comfortable sending off-device.
             </Alert>

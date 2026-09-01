@@ -50,7 +50,7 @@ export interface GemmaModelConfig extends BaseModelConfig {
  * Previously 1024, a MediaPipe-era leftover nobody revisited after the
  * LiteRT-LM migration: far too small for real usage (surfaces as the
  * runtime's own "Input token ids are too long" error the moment a room's
- * unread backlog — or a chat history — pushes past it, e.g. a single busy
+ * day-of messages — or a chat history — pushes past it, e.g. a single busy
  * day easily runs ~2000+ tokens). 8192 matches the value LiteRT-LM's own
  * quickstart (`@litert-lm/core`'s README) uses. Exported so summarize.ts
  * can size its own transcript-truncation safety net against the same
