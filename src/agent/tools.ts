@@ -150,7 +150,16 @@ export function buildChatTools(widgetApi: WidgetApi, userId: string, onSelectRoo
     }),
     callback: async ({ roomId }) => {
       logTool('navigate_to_room', 'called with', { roomId });
-      await widgetApi.navigateTo(`https://matrix.to/#/${encodeURIComponent(roomId)}`);
+      // NOT encodeURIComponent(roomId): a matrix.to permalink's fragment
+      // takes the room ID literally ("!abc123:example.com"), unencoded.
+      // matrix-widget-api only checks the URI starts with
+      // "https://matrix.to/#" (it does either way, so this never errors),
+      // then hands the string straight to Element's own permalink parser —
+      // which expects the raw ":" and doesn't decode "%3A" back out of it,
+      // so an encoded roomId silently resolves to nothing instead of
+      // throwing. Room IDs only ever contain fragment-safe characters
+      // anyway (opaque ID + a hostname), so there's nothing to escape.
+      await widgetApi.navigateTo(`https://matrix.to/#/${roomId}`);
       logTool('navigate_to_room', '→ navigated');
       return { navigated: true, roomId };
     },
