@@ -11,7 +11,9 @@ per-browser upload was an option).
 Files placed in this directory are a **fallback only**, used when nothing's
 been uploaded yet — `MODEL_ASSET_PATHS` in `GemmaEdgeModel.ts`:
 
-- `gemma-4-E2B-it-web.litertlm`
+- `gemma-4-E2B-it-web.litertlm` — **the supported model for now**,
+  downloadable from
+  [litert-community/gemma-4-E2B-it-litert-lm on Hugging Face](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/tree/main).
 - `gemma-4-E4B-it-web.litertlm`
 
 These exact filenames matter: the LiteRT-LM JS runtime currently only loads

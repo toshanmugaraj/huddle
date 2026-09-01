@@ -11,6 +11,13 @@ isn't.
 state event type and other internal identifiers below are unchanged on
 purpose; see the PR/commit that did the rename for why.)
 
+## Demo
+
+- [Demo 1](https://github.com/toshanmugaraj/huddle/releases/download/v0.1.0/Demo1.mov)
+- [Demo 2](https://github.com/toshanmugaraj/huddle/releases/download/v0.1.0/Demo2.mov)
+
+(Links download/open the `.mov` file rather than playing inline.)
+
 ## How it works
 
 - **Settings**: add rooms by ID/alias, pick a Gemma variant, edit the
@@ -26,9 +33,13 @@ purpose; see the PR/commit that did the rename for why.)
 
 ## Before it'll actually summarize anything
 
-Drop the two Gemma `.litertlm` weight files into `public/models/` — see
-`public/models/README.md`. Without them, "Prepare model" will fail with a
-404, cleanly (the UI surfaces the error; nothing else breaks).
+Drop a Gemma `.litertlm` weight file into `public/models/` — see
+`public/models/README.md`. **`gemma-4-E2B-it-web.litertlm` is the supported
+model for now**, downloadable from
+[litert-community/gemma-4-E2B-it-litert-lm on Hugging
+Face](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/tree/main).
+Without it, "Prepare model" will fail with a 404, cleanly (the UI surfaces
+the error; nothing else breaks).
 
 ## Running it
 
@@ -46,6 +57,54 @@ Custom).
 npm run build   # production bundle, dist/
 npm test        # vitest — today's-messages filtering logic covered so far
 ```
+
+## Configuring the model in Settings
+
+Open the **Settings** tab. Under **Summarization**, pick a mode — **On-device
+(private)** or **Gemini API (cloud)** — then follow the steps for that mode
+below, and finish with **Save settings** at the bottom.
+
+### On-device (private) — Gemma via LiteRT-LM Web
+
+1. Pick a variant from the dropdown: **Gemma 4 E2B (fast)** or **Gemma 4 E4B
+   (quality)**. **Gemma 4 E2B is the supported model for now** — see
+   `public/models/README.md` for the other variant's status.
+2. Get the weights into the browser, either way:
+   - **Bundled**: drop the matching `.litertlm` file into `public/models/`
+     before building/running — see "Before it'll actually summarize
+     anything" above and `public/models/README.md`. For E2B, that file is
+     downloadable from [litert-community/gemma-4-E2B-it-litert-lm on
+     Hugging
+     Face](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/tree/main).
+   - **Per-browser upload**: click **Upload model file** and pick a
+     `.litertlm` file from disk. Stored in this browser only (OPFS) — it
+     survives a reload but won't follow you to another browser/device, so
+     this is a one-time step per installation, not per session.
+     **Replace model file** / **Remove** appear once one's stored.
+3. Click **Prepare model**. This loads the weights and warms up the
+   WebGPU/WASM runtime — expect it to take a while for a multi-GB file. The
+   chip next to the button goes Preparing… → Ready, or Failed with the
+   error shown underneath.
+4. **Save settings**.
+
+Sync (Home tab) and Chat both use whichever variant is currently selected
+here — re-run **Prepare model** after switching variants or replacing the
+uploaded file, since Chat gates on this same "Ready" status before it'll
+let you send anything.
+
+### Gemini API (cloud)
+
+1. Pick a variant from the dropdown: **Gemini 3.6 Flash (fast)** or
+   **Gemini 3.7 Flash (quality)**.
+2. Get an API key from Google AI Studio (aistudio.google.com) and paste it
+   into the **Gemini API key** field.
+3. **Save settings**.
+
+Unlike on-device mode, this mode sends the room's messages to Google's
+servers to be summarized — Settings shows the same warning inline. The key
+is stored only in this browser's `localStorage`, never written to the
+Matrix room state and never synced across devices/browsers, so it needs
+entering again per browser.
 
 ## Known follow-ups (not yet built)
 
