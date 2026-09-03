@@ -65,6 +65,14 @@ export function getChatAgent(
       'ID so it stays the active room for later turns too. If the name comes back ambiguous or with ' +
       'no match, ask the user to clarify instead of guessing. ' +
       'Keep replies concise.',
+    // Only meaningful once telemetry.setupTracer() has been called (see
+    // langfuseTelemetry.ts, wired up in main.tsx) — a no-op attribute
+    // bag otherwise. `langfuse.user.id` is Langfuse's own documented OTel
+    // attribute for binding a trace to a user in its UI; not independently
+    // re-verified against a live Langfuse dashboard in this repo, so
+    // double-check it still renders as "user" there if this ever looks
+    // like it's not showing up.
+    traceAttributes: { 'langfuse.user.id': userId },
   });
 
   attachTraceLogging(agent, 'chat');

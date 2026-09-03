@@ -31,6 +31,44 @@ purpose; see the PR/commit that did the rename for why.)
   (`@litert-lm/core`, WebGPU). Summaries live in an in-memory store
   (`src/state/summaryStore.ts`) — a reload clears them, by design.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    HS[("Matrix homeserver<br/>Synapse")]
+    Element["Element Web<br/>(widget iframe host)"]
+
+    subgraph SPA["Huddle widget — static SPA in a sandboxed iframe, no backend"]
+        UI["React UI<br/>Home · Settings · Chat"]
+        WidgetAPI["matrix-widget-api /<br/>@matrix-widget-toolkit"]
+        AgentCode["Strands Agent<br/>chatAgent.ts · summarize.ts"]
+        Gemma["GemmaEdgeModel<br/>LiteRT-LM Web (@litert-lm/core)<br/>on-device · WebGPU"]
+        GoogleModel["GoogleModel<br/>(@google/genai)"]
+        Trace["trace.ts<br/>console logging — always on"]
+        Telemetry["langfuseTelemetry.ts<br/>Strands OTel tracer — opt-in"]
+    end
+
+    GeminiAPI[("Google Gemini API")]
+    Langfuse[("Langfuse<br/>cloud or self-hosted — opt-in")]
+
+    UI --> WidgetAPI
+    WidgetAPI <-->|postMessage| Element
+    Element <-->|client-server API| HS
+
+    UI --> AgentCode
+    AgentCode -->|local mode| Gemma
+    AgentCode -->|Gemini mode| GoogleModel
+    GoogleModel -.->|room messages leave the device| GeminiAPI
+
+    AgentCode -.->|hooks| Trace
+    AgentCode -.->|OTel spans, opt-in| Telemetry
+    Telemetry -.->|OTLP export, secret key ships in the bundle| Langfuse
+```
+
+- The widget never talks to the homeserver directly — it's an iframe sandboxed by Element, and everything room-related (messages, state events) goes through `matrix-widget-api`'s postMessage bridge to Element, which does the actual Matrix networking. Settings and message reads/writes covered in "How it works" above all flow through this box.
+- **Local mode** (default) never leaves the widget box: `GemmaEdgeModel` runs the quantized Gemma weights in-browser via LiteRT-LM Web (`@litert-lm/core`) on WebGPU. **Gemini mode** is the one path that leaves the device (the dashed edge to Google's API), by design and only opt-in (see "Configuring the model in Settings" below).
+- **Tracing** is two independent, separately-gated things off the same `Agent`: `trace.ts`'s console logging (always on, no setup) and `langfuseTelemetry.ts`'s OTel export to Langfuse (off unless `VITE_LANGFUSE_*` are set at build time). See "Observability" below for what turning the latter on actually means for a backend-less static SPA.
+
 ## Before it'll actually summarize anything
 
 Drop a Gemma `.litertlm` weight file into `public/models/` — see
@@ -105,6 +143,21 @@ servers to be summarized — Settings shows the same warning inline. The key
 is stored only in this browser's `localStorage`, never written to the
 Matrix room state and never synced across devices/browsers, so it needs
 entering again per browser.
+
+## Observability
+
+`src/agent/trace.ts` always logs Agent lifecycle events (model calls, tool
+calls, interrupts) to the console — useful in devtools out of the box, no
+setup. Optionally, setting `VITE_LANGFUSE_PUBLIC_KEY` + `VITE_LANGFUSE_SECRET_KEY`
+(+ optional `VITE_LANGFUSE_HOST`) before building sends the same events to
+[Langfuse](https://langfuse.com/) as well — see `.env.example` and
+`src/agent/langfuseTelemetry.ts`'s file comment for what turning this on
+actually means for a backend-less static SPA (short version: the secret key
+ships in the bundle, so only point it at an instance/project you're fine
+with every widget viewer being able to write to).
+
+(No eval harness yet — a prior pass added a standalone Ragas-based one,
+pulled back out for now; may come back if/when it's actually needed.)
 
 ## Known follow-ups (not yet built)
 

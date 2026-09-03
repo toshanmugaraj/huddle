@@ -5,6 +5,13 @@ import { useThemeSelection } from '@matrix-widget-toolkit/react';
 import { widgetApiPromise } from './widget';
 import { rawWidgetApi } from './matrix/rawApi';
 import { AppRoutes } from './routes/AppRoutes';
+import { initLangfuseTelemetry } from './agent/langfuseTelemetry';
+
+// No-ops unless VITE_LANGFUSE_* env vars were set at build time (see
+// .env.example and langfuseTelemetry.ts's file comment) — must run before
+// any Agent is constructed (chatAgent.ts/summarize.ts), since it's what
+// registers the OTel tracer provider those Agents report to.
+initLangfuseTelemetry();
 
 /**
  * Forwards Element's live `action:theme_change` to-widget message into
