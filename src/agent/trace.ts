@@ -13,11 +13,16 @@ import {
  * Console-logs the sequence of model calls, tool calls, messages, and
  * interrupts for one Agent, via Strands' hook system
  * (agent.addHook(EventClass, callback) — confirmed against the shipped
- * .d.ts, not the docs site). This is the lightweight option: Strands also
- * has agent.stream() for live event consumption and a full
- * OpenTelemetry-based tracer/meter (AgentTrace/AgentMetrics), but those are
- * either a bigger UI change or aimed at a server-side OTLP collector —
- * overkill for "let me see what's happening while testing in devtools."
+ * .d.ts, not the docs site). This is the lightweight, always-on option for
+ * "let me see what's happening while testing in devtools" — no setup, no
+ * env vars.
+ *
+ * For real observability backends (Langfuse), see langfuseTelemetry.ts
+ * instead: Strands' Agent class already emits full OpenTelemetry spans for
+ * every model/tool/loop call on its own once telemetry.setupTracer() is
+ * called — that's a one-time app-startup call (main.tsx), not a per-Agent
+ * hook like this function, and there's nothing to call at this file's
+ * call sites (chatAgent.ts/summarize.ts) to opt an Agent into it.
  *
  * Call once per Agent instance, right after construction. Returns a
  * cleanup function that removes all the hooks (each addHook call returns
