@@ -20,6 +20,24 @@ function logTool(name: string, ...args: unknown[]) {
 }
 
 /**
+ * A matrix.to permalink send, factored out so navigate_to_room and
+ * set_selected_room's own pinned-follow (below) can't drift apart on the
+ * encoding subtlety documented at the call site.
+ */
+async function navigateElementTo(widgetApi: WidgetApi, roomId: string): Promise<void> {
+  // NOT encodeURIComponent(roomId): a matrix.to permalink's fragment takes
+  // the room ID literally ("!abc123:example.com"), unencoded.
+  // matrix-widget-api only checks the URI starts with "https://matrix.to/#"
+  // (it does either way, so this never errors), then hands the string
+  // straight to Element's own permalink parser — which expects the raw ":"
+  // and doesn't decode "%3A" back out of it, so an encoded roomId silently
+  // resolves to nothing instead of throwing. Room IDs only ever contain
+  // fragment-safe characters anyway (opaque ID + a hostname), so there's
+  // nothing to escape.
+  await widgetApi.navigateTo(`https://matrix.to/#/${roomId}`);
+}
+
+/**
  * Tools exposed to the chat agent — both Gemini and the on-device Gemma path
  * support these now (GemmaEdgeModel translates LiteRT-LM's own tool-calling
  * protocol into Strands' tool-use events; see that file's class doc). Schemas
@@ -34,9 +52,16 @@ function logTool(name: string, ...args: unknown[]) {
  * model should never be choosing *which* widget API instance or user to
  * act as, only *what* to call. `onSelectRoom` is likewise a closure-only
  * callback into the (React-external) chat store rather than a tool the
- * model could invoke on some other target.
+ * model could invoke on some other target. `isPinned` is the same idea:
+ * a closure-only read of pinStore's current value (see that file), not
+ * something the model can query or set.
  */
-export function buildChatTools(widgetApi: WidgetApi, userId: string, onSelectRoom: (room: SelectedRoom) => void) {
+export function buildChatTools(
+  widgetApi: WidgetApi,
+  userId: string,
+  onSelectRoom: (room: SelectedRoom) => void,
+  isPinned: () => boolean,
+) {
   const listRooms = tool({
     name: 'list_rooms',
     description:
@@ -105,7 +130,11 @@ export function buildChatTools(widgetApi: WidgetApi, userId: string, onSelectRoo
       "given as context on every later turn — so call this whenever the user names or switches to a " +
       'room in their message, and it stays the active room until this is called again with a ' +
       "different one. Needs a room ID: resolve it first with get_room_id_by_name if you only have " +
-      'the name the user said.',
+      "the name the user said. If the widget is currently pinned, this also jumps the user's Element " +
+      'client to the room (same effect as navigate_to_room) — pinning means they asked to stay ' +
+      "with the assistant while browsing, so switching the conversation's room should bring their " +
+      'view along with it; call navigate_to_room separately only when unpinned and they explicitly ' +
+      'ask to be taken there.',
     inputSchema: z.object({
       roomId: z.string().describe('The room ID to make active, e.g. "!abc123:example.com".'),
     }),
@@ -113,8 +142,14 @@ export function buildChatTools(widgetApi: WidgetApi, userId: string, onSelectRoo
       logTool('set_selected_room', 'called with', { roomId });
       const roomName = await getRoomName(widgetApi, roomId);
       onSelectRoom({ roomId, roomName });
-      logTool('set_selected_room', `→ selected "${roomName}"`);
-      return { selected: true, roomId, roomName };
+
+      const pinned = isPinned();
+      if (pinned) {
+        await navigateElementTo(widgetApi, roomId);
+      }
+
+      logTool('set_selected_room', `→ selected "${roomName}"${pinned ? ', navigated (pinned)' : ''}`);
+      return { selected: true, roomId, roomName, navigated: pinned };
     },
   });
 
@@ -150,16 +185,7 @@ export function buildChatTools(widgetApi: WidgetApi, userId: string, onSelectRoo
     }),
     callback: async ({ roomId }) => {
       logTool('navigate_to_room', 'called with', { roomId });
-      // NOT encodeURIComponent(roomId): a matrix.to permalink's fragment
-      // takes the room ID literally ("!abc123:example.com"), unencoded.
-      // matrix-widget-api only checks the URI starts with
-      // "https://matrix.to/#" (it does either way, so this never errors),
-      // then hands the string straight to Element's own permalink parser —
-      // which expects the raw ":" and doesn't decode "%3A" back out of it,
-      // so an encoded roomId silently resolves to nothing instead of
-      // throwing. Room IDs only ever contain fragment-safe characters
-      // anyway (opaque ID + a hostname), so there's nothing to escape.
-      await widgetApi.navigateTo(`https://matrix.to/#/${roomId}`);
+      await navigateElementTo(widgetApi, roomId);
       logTool('navigate_to_room', '→ navigated');
       return { navigated: true, roomId };
     },

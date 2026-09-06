@@ -43,6 +43,7 @@ export function getChatAgent(
   key: ChatAgentKey,
   userId: string,
   onSelectRoom: (room: SelectedRoom) => void,
+  isPinned: () => boolean,
 ): Agent {
   if (cached && sameKey(cached.key, key)) {
     return cached.agent;
@@ -53,7 +54,7 @@ export function getChatAgent(
   const agent = new Agent({
     name: 'huddle-assistant',
     model,
-    tools: buildChatTools(widgetApi, userId, onSelectRoom),
+    tools: buildChatTools(widgetApi, userId, onSelectRoom, isPinned),
     systemPrompt:
       'You are a helpful assistant embedded in a Matrix chat widget. You can read recent room ' +
       'messages, navigate the user to a room, and send a message on their behalf (send_message ' +

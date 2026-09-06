@@ -9,6 +9,7 @@ import { useSettingsStore } from '../state/settingsStore';
 import { useApiKeyStore } from '../state/apiKeyStore';
 import { useModelStore } from '../state/modelStore';
 import { useChatStore, type ChatMessage } from '../state/chatStore';
+import { usePinStore } from '../state/pinStore';
 import { sanitizeSummaryHtml } from '../utils/sanitizeSummaryHtml';
 
 let nextId = 0;
@@ -63,6 +64,9 @@ export function Chat({ compact = false }: { compact?: boolean }) {
           : { mode: 'local', modelId: settings.localModel },
         userId,
         setSelectedRoom,
+        // Read live at tool-call time, not the render-time value — see
+        // pinStore.ts and set_selected_room's own comment in agent/tools.ts.
+        () => usePinStore.getState().pinned,
       );
       const result = await agent.invoke(invokeArg);
 
