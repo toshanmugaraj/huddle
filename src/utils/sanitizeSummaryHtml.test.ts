@@ -4,7 +4,7 @@
 // per-file rather than switching the whole suite off the faster default
 // `node` environment.
 import { describe, expect, it } from 'vitest';
-import { sanitizeSummaryHtml } from './sanitizeSummaryHtml';
+import { sanitizeSummaryHtml, toSpeechText } from './sanitizeSummaryHtml';
 
 describe('sanitizeSummaryHtml', () => {
   it('keeps the allowed formatting tags', () => {
@@ -42,5 +42,24 @@ describe('sanitizeSummaryHtml', () => {
     expect(out).not.toContain('<img');
     expect(out).not.toContain('javascript:');
     expect(out).toContain('this');
+  });
+});
+
+describe('toSpeechText', () => {
+  it('strips Markdown formatting punctuation rather than reading it aloud literally', () => {
+    expect(toSpeechText('**bold** and *italic*')).toBe('bold and italic');
+  });
+
+  it('turns a Markdown bullet list into plain space-separated text', () => {
+    expect(toSpeechText('- Item one\n- Item two')).toBe('Item one Item two');
+  });
+
+  it('collapses the allowed HTML tags down to plain text', () => {
+    expect(toSpeechText('<p>Hello <b>world</b></p>')).toBe('Hello world');
+  });
+
+  it('never lets a script tag or its content reach the output', () => {
+    const out = toSpeechText('<p>hi</p><script>alert(1)</script>');
+    expect(out).toBe('hi');
   });
 });

@@ -42,3 +42,19 @@ export function sanitizeSummaryHtml(markdownOrHtml: string): string {
     ALLOWED_ATTR: [],
   });
 }
+
+/**
+ * Same markdown/HTML normalization as sanitizeSummaryHtml above, but
+ * returns plain text for feeding to SpeechSynthesis in Chat's voice mode —
+ * reading "asterisk asterisk bold asterisk asterisk" aloud is worse than
+ * just reading "bold", and a stray unescaped tag has no business reaching
+ * an API that just reads whatever string it's given. Reuses the same
+ * sanitized-HTML output (so it inherits the exact same XSS-relevant
+ * allowlist) rather than re-implementing markdown handling, then strips
+ * even that allowlisted HTML back down to text via the DOM's own parser.
+ */
+export function toSpeechText(markdownOrHtml: string): string {
+  const html = sanitizeSummaryHtml(markdownOrHtml);
+  const text = new DOMParser().parseFromString(html, 'text/html').body.textContent ?? '';
+  return text.replace(/\s+/g, ' ').trim();
+}

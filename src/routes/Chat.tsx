@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Box, Button, Card, CardContent, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, Card, CardContent, IconButton, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import { useWidgetApi } from '@matrix-widget-toolkit/react';
 import type { InvokeArgs } from '@strands-agents/sdk';
 import { InterruptResponseContent } from '../agent/tools';
@@ -10,7 +10,9 @@ import { useApiKeyStore } from '../state/apiKeyStore';
 import { useModelStore } from '../state/modelStore';
 import { useChatStore, type ChatMessage } from '../state/chatStore';
 import { usePinStore } from '../state/pinStore';
-import { sanitizeSummaryHtml } from '../utils/sanitizeSummaryHtml';
+import { sanitizeSummaryHtml, toSpeechText } from '../utils/sanitizeSummaryHtml';
+import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
+import { useSpeechSynthesis } from '../hooks/useSpeechSynthesis';
 
 let nextId = 0;
 const newId = () => String(nextId++);
@@ -27,6 +29,9 @@ export function Chat({ compact = false }: { compact?: boolean }) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  // Session-only, not persisted anywhere (unlike settings) — deliberately
+  // resets to off whenever this tab remounts (e.g. switching away and back).
+  const [voiceMode, setVoiceMode] = useState(false);
 
   // Bottom sentinel, not a scrollTop calc against the Stack ref — scrolls
   // correctly regardless of exactly when layout/reflow settles after a new
@@ -37,21 +42,6 @@ export function Chat({ compact = false }: { compact?: boolean }) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, pendingApproval]);
-
-  if (settings.mode === 'gemini' && !geminiApiKey) {
-    return <Alert severity="warning">Set a Gemini API key in Settings to use Chat.</Alert>;
-  }
-
-  if (settings.mode === 'local' && localModelStatus !== 'ready') {
-    const label = GEMMA_MODEL_OPTIONS.find((o) => o.id === settings.localModel)?.label ?? settings.localModel;
-    return (
-      <Alert severity="info">
-        Chat needs the on-device model prepared first — go to Settings and hit "Prepare model" for{' '}
-        {label}, then come back. (Preparing it here automatically would mean silently kicking off a
-        multi-GB load the moment you open this tab.)
-      </Alert>
-    );
-  }
 
   const runTurn = async (invokeArg: InvokeArgs) => {
     setBusy(true);
@@ -81,7 +71,15 @@ export function Chat({ compact = false }: { compact?: boolean }) {
         return;
       }
 
-      addMessage({ id: newId(), role: 'assistant', text: result.toString().trim() });
+      const replyText = result.toString().trim();
+      addMessage({ id: newId(), role: 'assistant', text: replyText });
+      // Read via the ref (updated every render, below) rather than the
+      // voiceMode this closure captured at send time — a turn can be in
+      // flight long enough (a slow model, or a send_message approval
+      // pause) for the user to toggle voice mode before the reply actually
+      // arrives, and it's the value at reply time that should decide
+      // whether to speak it, not the value when the turn started.
+      if (voiceModeRef.current) speak(toSpeechText(replyText));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -89,19 +87,22 @@ export function Chat({ compact = false }: { compact?: boolean }) {
     }
   };
 
-  const handleSend = () => {
-    const text = input.trim();
-    if (!text || busy) return;
+  // The visible bubble shows exactly what was said/typed; the room context
+  // (if any) is only added to what the agent actually receives, so it
+  // doesn't clutter the conversation display but still gives the model
+  // (and its tool calls) an unambiguous room ID instead of having to parse
+  // one out of free text. Shared by both the type-and-click-Send path and
+  // voice mode's recognized-speech path below, so the two can't drift.
+  const sendText = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || busy) return;
     setInput('');
-    // The visible bubble shows exactly what was typed; the room context (if
-    // any) is only added to what the agent actually receives, so it doesn't
-    // clutter the conversation display but still gives the model (and its
-    // tool calls) an unambiguous room ID instead of having to parse one out
-    // of free text.
-    addMessage({ id: newId(), role: 'user', text });
+    addMessage({ id: newId(), role: 'user', text: trimmed });
     const roomContext = selectedRoom ? `[Selected room: ${selectedRoom.roomName} (${selectedRoom.roomId})]\n` : '';
-    void runTurn(`${roomContext}${text}`);
+    void runTurn(`${roomContext}${trimmed}`);
   };
+
+  const handleSend = () => sendText(input);
 
   const handleApproval = (approved: boolean) => {
     if (!pendingApproval) return;
@@ -114,6 +115,57 @@ export function Chat({ compact = false }: { compact?: boolean }) {
     });
     void runTurn([new InterruptResponseContent({ interruptId, response: approved })]);
   };
+
+  // Voice mode: recognized speech is sent exactly like typed input (via
+  // sendText above), and (via runTurn above) the reply is read back with
+  // speech synthesis. Both hooks must be called unconditionally on every
+  // render (rules of hooks) — placed after sendText/runTurn/handleApproval
+  // only because those aren't hooks and reference-order doesn't matter for
+  // them, but still before the two "not ready yet" early returns below,
+  // which do matter.
+  const { supported: sttSupported, listening, error: sttError, start: startListening, stop: stopListening } =
+    useSpeechRecognition(sendText);
+  const { supported: ttsSupported, speaking, speak, stop: stopSpeaking } = useSpeechSynthesis();
+
+  const voiceModeRef = useRef(voiceMode);
+  voiceModeRef.current = voiceMode;
+
+  useEffect(() => {
+    if (sttError) setError(sttError);
+  }, [sttError]);
+
+  const toggleVoiceMode = () => {
+    const next = !voiceMode;
+    setVoiceMode(next);
+    if (!next) {
+      stopListening();
+      stopSpeaking();
+    }
+  };
+
+  const toggleListening = () => {
+    if (listening) {
+      stopListening();
+    } else {
+      stopSpeaking(); // don't let the mic pick up the assistant's own voice
+      startListening();
+    }
+  };
+
+  if (settings.mode === 'gemini' && !geminiApiKey) {
+    return <Alert severity="warning">Set a Gemini API key in Settings to use Chat.</Alert>;
+  }
+
+  if (settings.mode === 'local' && localModelStatus !== 'ready') {
+    const label = GEMMA_MODEL_OPTIONS.find((o) => o.id === settings.localModel)?.label ?? settings.localModel;
+    return (
+      <Alert severity="info">
+        Chat needs the on-device model prepared first — go to Settings and hit "Prepare model" for{' '}
+        {label}, then come back. (Preparing it here automatically would mean silently kicking off a
+        multi-GB load the moment you open this tab.)
+      </Alert>
+    );
+  }
 
   return (
     <Stack spacing={compact ? 1 : 2} sx={{ height: '100%' }}>
@@ -174,19 +226,63 @@ export function Chat({ compact = false }: { compact?: boolean }) {
         </Typography>
       )}
 
+      {speaking && (
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography variant="caption" color="text.secondary">
+            🔊 Speaking…
+          </Typography>
+          <Button size="small" onClick={stopSpeaking}>
+            Stop
+          </Button>
+        </Stack>
+      )}
+
       <Stack direction="row" spacing={1}>
         <TextField
           size="small"
           fullWidth
-          placeholder="Ask the assistant…"
+          placeholder={listening ? 'Listening…' : 'Ask the assistant…'}
           value={input}
-          disabled={busy || !!pendingApproval}
+          disabled={busy || !!pendingApproval || listening}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
         />
+        {voiceMode && (
+          <Tooltip title={sttSupported ? (listening ? 'Stop listening' : 'Speak your message') : 'Voice input is not supported in this browser'}>
+            {/* span wrapper: IconButton's own disabled prop swallows the Tooltip's hover/focus listeners */}
+            <span>
+              <IconButton
+                onClick={toggleListening}
+                color={listening ? 'error' : 'default'}
+                disabled={!sttSupported || busy || !!pendingApproval}
+              >
+                {listening ? '⏺️' : '🎤'}
+              </IconButton>
+            </span>
+          </Tooltip>
+        )}
         <Button variant="contained" onClick={handleSend} disabled={busy || !!pendingApproval || !input.trim()}>
           {busy ? 'Thinking…' : 'Send'}
         </Button>
+        <Tooltip
+          title={
+            !sttSupported && !ttsSupported
+              ? 'Voice mode is not supported in this browser'
+              : voiceMode
+                ? 'Turn off voice mode'
+                : 'Turn on voice mode (speak to the assistant, hear replies read aloud)'
+          }
+        >
+          <span>
+            <IconButton
+              onClick={toggleVoiceMode}
+              color={voiceMode ? 'primary' : 'default'}
+              disabled={!sttSupported && !ttsSupported}
+            >
+              🎙️
+            </IconButton>
+          </span>
+        </Tooltip>
       </Stack>
     </Stack>
   );
