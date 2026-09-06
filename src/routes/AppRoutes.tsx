@@ -6,13 +6,17 @@ import { Chat } from './Chat';
 import { Settings } from './Settings';
 import { rawWidgetApi } from '../matrix/rawApi';
 import { useIsCompact } from '../hooks/useIsCompact';
+import { usePinStore } from '../state/pinStore';
 
 type TabValue = 'home' | 'chat' | 'settings';
 
 export function AppRoutes() {
   const widgetApi = useWidgetApi();
   const [tab, setTab] = useState<TabValue>('home');
-  const [pinned, setPinned] = useState(false);
+  // Lifted into a store (not local state) so agent/tools.ts's
+  // set_selected_room callback can read the current value too — see
+  // pinStore.ts.
+  const { pinned, setPinned } = usePinStore();
   const [pinError, setPinError] = useState<string | undefined>();
   const compact = useIsCompact();
 
