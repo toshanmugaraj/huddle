@@ -1,5 +1,5 @@
 import { useEffect, useState, type SyntheticEvent } from 'react';
-import { Alert, Box, Button, Card, CardContent, Chip, Slider, Stack, Typography } from '@mui/material';
+import { Alert, Box, Button, Card, CardContent, Chip, IconButton, Slider, Stack, Tooltip, Typography } from '@mui/material';
 import { useWidgetApi } from '@matrix-widget-toolkit/react';
 import { loadSettings, saveSettings } from '../matrix/settingsSync';
 import { getRoomName } from '../matrix/rooms';
@@ -42,6 +42,14 @@ export function Home() {
   const [syncing, setSyncing] = useState(false);
   const [progress, setProgress] = useState<string | undefined>();
   const [syncError, setSyncError] = useState<string | undefined>();
+  // Which single room a per-card refresh (as opposed to the top-level Sync
+  // across every room) is currently running for — at most one at a time,
+  // same reasoning as handleSync's own comment on why it summarizes rooms
+  // sequentially rather than in parallel: local mode's WebGPU inference
+  // shares one GPU, so concurrent refreshes would just queue up behind each
+  // other anyway, and letting a card's refresh race a full Sync (or another
+  // card's refresh) would make "which run wrote this card's summary" murky.
+  const [refreshingRoomId, setRefreshingRoomId] = useState<string | undefined>();
 
   useEffect(() => {
     if (loaded || !userId) return;
@@ -52,6 +60,47 @@ export function Home() {
   }, [widgetApi, userId, loaded, setSettings, setLoaded]);
 
   const roomNames = useResolveRoomNames(widgetApi, settings.roomIds);
+
+  // One room's worth of the Sync flow: fetch its messages for the current
+  // history range and summarize them. Shared by handleSync (looped across
+  // every selected room) and handleRefreshRoom (a single card's refresh
+  // button) so the two can't drift on what "syncing a room" means. Catches
+  // its own errors rather than letting them propagate, same as handleSync's
+  // per-room try/catch did before this was extracted — one room failing
+  // (a room-specific fetch error, say) shouldn't abort a run that covers
+  // other rooms too.
+  const syncRoom = async (roomId: string): Promise<void> => {
+    setSummary(roomId, { status: 'summarizing' });
+    try {
+      const roomName = await getRoomName(widgetApi, roomId);
+      const messages = await getMessagesSince(widgetApi, roomId, settings.historyDaysBack);
+
+      if (messages.length === 0) {
+        setSummary(roomId, {
+          roomName,
+          status: 'no-messages',
+          daysBack: settings.historyDaysBack,
+          syncedAt: Date.now(),
+        });
+        return;
+      }
+
+      const summary = await summarizeRoom(roomName, messages, settings, geminiApiKey, settings.historyDaysBack);
+      setSummary(roomId, {
+        roomName,
+        summary,
+        messageCount: messages.length,
+        daysBack: settings.historyDaysBack,
+        status: 'done',
+        syncedAt: Date.now(),
+      });
+    } catch (err) {
+      setSummary(roomId, {
+        status: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
 
   const handleSync = async () => {
     setSyncing(true);
@@ -76,45 +125,41 @@ export function Home() {
       // just queue up behind each other anyway; for Gemini mode it's kept
       // sequential too, mainly so per-room progress stays readable.
       for (let i = 0; i < settings.roomIds.length; i++) {
-        const roomId = settings.roomIds[i];
         setProgress(`Summarizing room ${i + 1} of ${settings.roomIds.length}…`);
-        setSummary(roomId, { status: 'summarizing' });
-
-        try {
-          const roomName = await getRoomName(widgetApi, roomId);
-          const messages = await getMessagesSince(widgetApi, roomId, settings.historyDaysBack);
-
-          if (messages.length === 0) {
-            setSummary(roomId, {
-              roomName,
-              status: 'no-messages',
-              daysBack: settings.historyDaysBack,
-              syncedAt: Date.now(),
-            });
-            continue;
-          }
-
-          const summary = await summarizeRoom(roomName, messages, settings, geminiApiKey, settings.historyDaysBack);
-          setSummary(roomId, {
-            roomName,
-            summary,
-            messageCount: messages.length,
-            daysBack: settings.historyDaysBack,
-            status: 'done',
-            syncedAt: Date.now(),
-          });
-        } catch (err) {
-          setSummary(roomId, {
-            status: 'error',
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
+        await syncRoom(settings.roomIds[i]);
       }
     } catch (err) {
       setSyncError(err instanceof Error ? err.message : String(err));
     } finally {
       setSyncing(false);
       setProgress(undefined);
+    }
+  };
+
+  // A single card's refresh button — re-syncs just that room, without
+  // touching the others or requiring a full Sync pass. Guarded against a
+  // full Sync (or another card's refresh) already being in flight for the
+  // GPU-sharing reason on refreshingRoomId's declaration, not just to avoid
+  // a double-click; the button itself is also disabled in that state (see
+  // SummaryCard), this is the belt-and-suspenders check against the async
+  // gap between a click and the disabled prop actually re-rendering.
+  const handleRefreshRoom = async (roomId: string) => {
+    if (syncing || refreshingRoomId) return;
+    setRefreshingRoomId(roomId);
+    try {
+      if (settings.mode === 'local') {
+        setModelStatus(settings.localModel, 'preparing');
+        await prepareModel(settings.localModel);
+        setModelStatus(settings.localModel, 'ready');
+      }
+      // Gemini mode's missing-API-key case isn't pre-checked here the way
+      // handleSync checks it upfront — summarizeRoom already throws
+      // MissingApiKeyError for that, and syncRoom's own catch turns it into
+      // this one card's error status, which is exactly the right scope for
+      // a single-room refresh (no need for a widget-wide banner over it).
+      await syncRoom(roomId);
+    } finally {
+      setRefreshingRoomId(undefined);
     }
   };
 
@@ -186,7 +231,19 @@ export function Home() {
       {syncError && <Alert severity="error">{syncError}</Alert>}
 
       {settings.roomIds.map((roomId) => (
-        <SummaryCard key={roomId} roomId={roomId} roomName={roomNames[roomId]} summary={summaries[roomId]} />
+        <SummaryCard
+          key={roomId}
+          roomId={roomId}
+          roomName={roomNames[roomId]}
+          summary={summaries[roomId]}
+          onRefresh={handleRefreshRoom}
+          // Disabled during a full Sync (which is already about to
+          // overwrite this card anyway) and while any single card's
+          // refresh is in flight — including a different card's, per
+          // refreshingRoomId's own comment on why only one runs at a time.
+          refreshDisabled={syncing || !!refreshingRoomId}
+          refreshing={refreshingRoomId === roomId}
+        />
       ))}
     </Stack>
   );
@@ -196,10 +253,16 @@ function SummaryCard({
   roomId,
   roomName,
   summary,
+  onRefresh,
+  refreshDisabled,
+  refreshing,
 }: {
   roomId: string;
   roomName?: string;
   summary?: RoomSummary;
+  onRefresh: (roomId: string) => void;
+  refreshDisabled: boolean;
+  refreshing: boolean;
 }) {
   const title = summary?.roomName ?? roomName ?? roomId;
 
@@ -208,7 +271,17 @@ function SummaryCard({
       <CardContent>
         <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
           <Typography variant="subtitle1">{title}</Typography>
-          <StatusChip status={summary?.status ?? 'idle'} />
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            <StatusChip status={summary?.status ?? 'idle'} />
+            <Tooltip title={refreshing ? 'Refreshing…' : `Refresh just this room (${daysSentence(summary?.daysBack ?? 0)})`}>
+              {/* span wrapper: IconButton's own disabled prop swallows the Tooltip's hover/focus listeners */}
+              <span>
+                <IconButton size="small" onClick={() => onRefresh(roomId)} disabled={refreshDisabled}>
+                  {refreshing ? '⏳' : '🔄'}
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Stack>
         </Stack>
 
         {summary?.status === 'done' && (
