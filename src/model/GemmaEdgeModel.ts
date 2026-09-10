@@ -253,36 +253,54 @@ export class GemmaEdgeModel extends Model<GemmaModelConfig> {
       let hasToolCalls = false;
       let full = '';
 
-      for await (const chunk of conversation.sendMessageStreaming(lastMessage)) {
-        for (const text of textPartsOf(chunk.content)) {
-          if (!textBlockOpen) {
-            yield { type: 'modelContentBlockStartEvent' };
-            textBlockOpen = true;
-          }
-          full += text;
-          yield { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } };
-        }
+      // getReader()/read() loop, not `for await...of` directly on the
+      // ReadableStream `sendMessageStreaming` returns — Safari/WebKit
+      // doesn't implement `ReadableStream.prototype[Symbol.asyncIterator]`
+      // (Chrome does), so `for await` over it there throws a mangled
+      // "X is not a function" TypeError (JSC dumps the source range of the
+      // whole for-await head into the message, which is why a prod/
+      // minified build's version of that error reads like garbage — e.g.
+      // "_ of c.sendMessageStreaming is not a function"). getReader() is
+      // part of the actual Streams spec both engines implement, so this
+      // works identically in Chrome.
+      const reader = conversation.sendMessageStreaming(lastMessage).getReader();
+      try {
+        while (true) {
+          const { done, value: chunk } = await reader.read();
+          if (done) break;
 
-        if (chunk.tool_calls && chunk.tool_calls.length > 0) {
-          if (textBlockOpen) {
-            yield { type: 'modelContentBlockStopEvent' };
-            textBlockOpen = false;
+          for (const text of textPartsOf(chunk.content)) {
+            if (!textBlockOpen) {
+              yield { type: 'modelContentBlockStartEvent' };
+              textBlockOpen = true;
+            }
+            full += text;
+            yield { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } };
           }
-          for (const call of chunk.tool_calls) {
-            hasToolCalls = true;
-            const { toolUseId, name, input } = toolCallFromLm(call);
-            toolUseIdToName.set(toolUseId, name);
-            yield {
-              type: 'modelContentBlockStartEvent',
-              start: { type: 'toolUseStart', name, toolUseId },
-            };
-            yield {
-              type: 'modelContentBlockDeltaEvent',
-              delta: { type: 'toolUseInputDelta', input: JSON.stringify(input) },
-            };
-            yield { type: 'modelContentBlockStopEvent' };
+
+          if (chunk.tool_calls && chunk.tool_calls.length > 0) {
+            if (textBlockOpen) {
+              yield { type: 'modelContentBlockStopEvent' };
+              textBlockOpen = false;
+            }
+            for (const call of chunk.tool_calls) {
+              hasToolCalls = true;
+              const { toolUseId, name, input } = toolCallFromLm(call);
+              toolUseIdToName.set(toolUseId, name);
+              yield {
+                type: 'modelContentBlockStartEvent',
+                start: { type: 'toolUseStart', name, toolUseId },
+              };
+              yield {
+                type: 'modelContentBlockDeltaEvent',
+                delta: { type: 'toolUseInputDelta', input: JSON.stringify(input) },
+              };
+              yield { type: 'modelContentBlockStopEvent' };
+            }
           }
         }
+      } finally {
+        reader.releaseLock();
       }
 
       if (textBlockOpen) {
