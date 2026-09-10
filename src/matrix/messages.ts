@@ -43,16 +43,22 @@ export interface MessagesSinceResult {
   messages: RoomMessage[];
   /**
    * Whether the requested `daysBack` window is actually backed by data —
-   * i.e. whether Element's *already-loaded* timeline for this room (see
-   * this function's main doc comment on why that's the ceiling) reaches
-   * back at least as far as the cutoff. `false` does NOT mean older
-   * messages don't exist — it means this sync has no way to tell, because
-   * nothing loaded locally reaches far enough back to confirm either way.
-   * A quiet room with genuinely nothing before the cutoff looks identical
-   * to a busy room Element just hasn't paginated back through yet; there's
-   * no way to distinguish the two from inside the widget sandbox. Treated
-   * as `true` when there are no messages loaded at all (vacuously — an
-   * empty room isn't "missing" anything relative to the window).
+   * i.e. whether `availableDaysBack` (below) reaches at least as far back
+   * as `daysBack` was asked for. Deliberately compared at the same
+   * calendar-day granularity as `availableDaysBack`, NOT against the exact
+   * cutoff instant (midnight of the oldest requested day): a message is
+   * essentially never sent at precisely 00:00:00.000, so comparing raw
+   * timestamps would mark the oldest requested day incomplete almost every
+   * time even when it's fully represented — that was a real bug here
+   * (`availableDaysBack === daysBack` still reporting `complete: false`).
+   * `false` does NOT mean older messages don't exist — it means this sync
+   * has no way to tell, because nothing loaded locally reaches far enough
+   * back to confirm either way. A quiet room with genuinely nothing before
+   * the cutoff looks identical to a busy room Element just hasn't
+   * paginated back through yet; there's no way to distinguish the two from
+   * inside the widget sandbox. Treated as `true` when there are no
+   * messages loaded at all (vacuously — an empty room isn't "missing"
+   * anything relative to the window).
    */
   complete: boolean;
   /**
@@ -118,7 +124,7 @@ export async function getMessagesSince(
   // whatever's cached.
   const earliestLoadedTs = sorted[0]?.origin_server_ts;
   const availableDaysBack = earliestLoadedTs === undefined ? 0 : daysBackOf(earliestLoadedTs);
-  const complete = earliestLoadedTs === undefined || earliestLoadedTs <= cutoff.getTime();
+  const complete = earliestLoadedTs === undefined || availableDaysBack >= daysBack;
 
   return { messages, complete, availableDaysBack };
 }

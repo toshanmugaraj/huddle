@@ -114,6 +114,23 @@ describe('getMessagesSince', () => {
       expect(result).toMatchObject({ complete: true, availableDaysBack: 3 });
     });
 
+    it('is complete when the earliest loaded message is on the cutoff day but after midnight (regression: day-granularity, not exact-timestamp, comparison)', async () => {
+      widgetApi = mockWidgetApi();
+      // A message is essentially never sent at exactly 00:00:00.000 — the
+      // realistic case is "sometime during the oldest requested day," which
+      // still means that day is fully represented (availableDaysBack: 3,
+      // same as requested). Comparing raw timestamps against the exact
+      // cutoff instant instead of day-granularity used to mark this
+      // "complete: false" even though nothing is actually missing.
+      const nineAmThatDay = START_OF_3_DAYS_AGO + 9 * 60 * 60 * 1000;
+      widgetApi.mockSendRoomEvent(messageEvent('$1', nineAmThatDay, 'first message that day'));
+      widgetApi.mockSendRoomEvent(messageEvent('$2', NOW, 'this afternoon'));
+
+      const result = await getMessagesSince(widgetApi, ROOM_ID, 3);
+
+      expect(result).toMatchObject({ complete: true, availableDaysBack: 3 });
+    });
+
     it('is NOT complete when the earliest loaded message is newer than the cutoff — Element just hasn’t loaded that far back', async () => {
       widgetApi = mockWidgetApi();
       // Only 1 day of history is actually loaded, but 3 were requested.
