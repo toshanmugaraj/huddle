@@ -2,10 +2,9 @@ import { useEffect, useState, type SyntheticEvent } from 'react';
 import { Alert, Box, Button, Card, CardContent, Chip, IconButton, Slider, Stack, Tooltip, Typography } from '@mui/material';
 import { useWidgetApi } from '@matrix-widget-toolkit/react';
 import { loadSettings, saveSettings } from '../matrix/settingsSync';
-import { getRoomName } from '../matrix/rooms';
 import { useResolveRoomNames } from '../matrix/useResolveRoomNames';
-import { getMessagesSince } from '../matrix/messages';
-import { summarizeRoom, prepareModel } from '../agent/summarize';
+import { syncRoom as syncOneRoom, syncAllRooms, type SyncContext } from '../agent/sync';
+import { prepareModel } from '../agent/summarize';
 import { useSettingsStore } from '../state/settingsStore';
 import { useSummaryStore, type RoomSummary } from '../state/summaryStore';
 import { useModelStore } from '../state/modelStore';
@@ -18,9 +17,11 @@ const MAX_HISTORY_DAYS_BACK = 7;
  * "Today" / "2 days" / ... — same "0 = today, N = N extra days back"
  * framing as settingsSync.ts's historyDaysBack doc comment, just the
  * compact form for the slider's own tick marks (see daysSentence below for
- * the prose form used in captions/the prompt sent to the model).
+ * the prose form used in captions/the prompt sent to the model). Exported
+ * for the companion window (companion/CompanionApp.tsx), which reuses
+ * SummaryCard as-is rather than re-deriving its own copy of this label.
  */
-function daysTickLabel(daysBack: number): string {
+export function daysTickLabel(daysBack: number): string {
   const totalDays = daysBack + 1;
   return totalDays === 1 ? 'Today' : `${totalDays} days`;
 }
@@ -61,86 +62,22 @@ export function Home() {
 
   const roomNames = useResolveRoomNames(widgetApi, settings.roomIds);
 
-  // One room's worth of the Sync flow: fetch its messages for the current
-  // history range and summarize them. Shared by handleSync (looped across
-  // every selected room) and handleRefreshRoom (a single card's refresh
-  // button) so the two can't drift on what "syncing a room" means. Catches
-  // its own errors rather than letting them propagate, same as handleSync's
-  // per-room try/catch did before this was extracted — one room failing
-  // (a room-specific fetch error, say) shouldn't abort a run that covers
-  // other rooms too.
-  const syncRoom = async (roomId: string): Promise<void> => {
-    setSummary(roomId, { status: 'summarizing' });
-    try {
-      const roomName = await getRoomName(widgetApi, roomId);
-      const { messages, complete, availableDaysBack } = await getMessagesSince(
-        widgetApi,
-        roomId,
-        settings.historyDaysBack,
-      );
-
-      if (messages.length === 0) {
-        setSummary(roomId, {
-          roomName,
-          status: 'no-messages',
-          daysBack: settings.historyDaysBack,
-          complete,
-          availableDaysBack,
-          syncedAt: Date.now(),
-        });
-        return;
-      }
-
-      const summary = await summarizeRoom(roomName, messages, settings, geminiApiKey, settings.historyDaysBack);
-      setSummary(roomId, {
-        roomName,
-        summary,
-        messageCount: messages.length,
-        daysBack: settings.historyDaysBack,
-        complete,
-        availableDaysBack,
-        status: 'done',
-        syncedAt: Date.now(),
-      });
-    } catch (err) {
-      setSummary(roomId, {
-        status: 'error',
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  };
+  // Built fresh each render (cheap — just references) rather than memoized:
+  // syncRoom/syncAllRooms (agent/sync.ts) take this instead of closing over
+  // component state directly, so the exact same functions also work from
+  // the companion-window relay host (companion/hostBootstrap.ts), which has
+  // no hooks/component of its own to close over.
+  const syncCtx: SyncContext = { widgetApi, settings, geminiApiKey, setSummary, setModelStatus };
 
   const handleSync = async () => {
     setSyncing(true);
     setSyncError(undefined);
-
-    if (settings.mode === 'gemini' && !geminiApiKey) {
-      setSyncError('Gemini mode is selected but no API key is set — add one in Settings.');
-      setSyncing(false);
-      return;
-    }
-
     try {
-      if (settings.mode === 'local') {
-        setProgress('Preparing model…');
-        setModelStatus(settings.localModel, 'preparing');
-        await prepareModel(settings.localModel);
-        setModelStatus(settings.localModel, 'ready');
-      }
-
-      // Sequential, not parallel — for local mode WebGPU inference shares
-      // one GPU, so fanning out concurrent generateResponse() calls would
-      // just queue up behind each other anyway; for Gemini mode it's kept
-      // sequential too, mainly so per-room progress stays readable.
-      for (let i = 0; i < settings.roomIds.length; i++) {
-        setProgress(`Summarizing room ${i + 1} of ${settings.roomIds.length}…`);
-        await syncRoom(settings.roomIds[i]);
-      }
+      await syncAllRooms(syncCtx, settings.roomIds, setProgress);
     } catch (err) {
       setSyncError(err instanceof Error ? err.message : String(err));
     } finally {
       setSyncing(false);
-      setProgress(undefined);
     }
   };
 
@@ -161,11 +98,11 @@ export function Home() {
         setModelStatus(settings.localModel, 'ready');
       }
       // Gemini mode's missing-API-key case isn't pre-checked here the way
-      // handleSync checks it upfront — summarizeRoom already throws
+      // syncAllRooms checks it upfront — summarizeRoom already throws
       // MissingApiKeyError for that, and syncRoom's own catch turns it into
       // this one card's error status, which is exactly the right scope for
       // a single-room refresh (no need for a widget-wide banner over it).
-      await syncRoom(roomId);
+      await syncOneRoom(syncCtx, roomId);
     } finally {
       setRefreshingRoomId(undefined);
     }
@@ -257,7 +194,8 @@ export function Home() {
   );
 }
 
-function SummaryCard({
+/** Exported for the companion window (companion/CompanionApp.tsx), which renders the same cards driven by its own relay-backed refresh handler instead of Home's local one. */
+export function SummaryCard({
   roomId,
   roomName,
   summary,

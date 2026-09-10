@@ -7,6 +7,7 @@ import { Settings } from './Settings';
 import { rawWidgetApi } from '../matrix/rawApi';
 import { useIsCompact } from '../hooks/useIsCompact';
 import { usePinStore } from '../state/pinStore';
+import { openCompanionWindow } from '../companion/popout';
 
 type TabValue = 'home' | 'chat' | 'settings';
 
@@ -41,8 +42,7 @@ export function AppRoutes() {
     if (compact) setPinned(true);
   }, [compact]);
 
-  const togglePin = async () => {
-    const next = !pinned;
+  const setAlwaysOnScreen = async (next: boolean) => {
     try {
       // Not gating on the resolved `success` boolean any more — some hosts
       // apply the change but don't reliably report it back, which made this
@@ -54,6 +54,20 @@ export function AppRoutes() {
     } catch (err) {
       setPinError(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  const togglePin = () => setAlwaysOnScreen(!pinned);
+
+  // Companion window (companion/popout.ts) only keeps working while this
+  // widget iframe stays mounted somewhere in Element — see relay.ts's file
+  // comment. Pinning first (if not already) is the same fix CrewBoard's own
+  // popout button applies for the identical reason: without it, the
+  // companion's relay dies the moment the user navigates to a different
+  // room, with no obvious cause from the companion window's side (just the
+  // generic "couldn't reach the tab" error).
+  const handleOpenCompanion = () => {
+    if (!pinned) void setAlwaysOnScreen(true);
+    openCompanionWindow();
   };
 
   // Compact (PiP) mode: no tab switcher — Element's PiP is small and fixed
@@ -83,6 +97,17 @@ export function AppRoutes() {
             sx={{ mx: 0.5, ml: compact ? 1 : 0.5 }}
           >
             {pinned ? '📌' : '📍'}
+          </IconButton>
+        </Tooltip>
+        {/* Opens (or focuses) a real, separate browser window that stays
+            connected to this widget over a BroadcastChannel relay — see
+            companion/relay.ts's file comment for the full "why," and its
+            own doc comment for exactly what it can/can't show (it mirrors
+            whatever this widget already has, not anything more). Pins
+            first if not already pinned — see handleOpenCompanion. */}
+        <Tooltip title="Open in a separate window">
+          <IconButton onClick={handleOpenCompanion} size={compact ? 'small' : 'medium'} sx={{ mx: 0.5 }}>
+            🗗
           </IconButton>
         </Tooltip>
       </Box>

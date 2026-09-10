@@ -39,6 +39,24 @@ purpose; see the PR/commit that did the rename for why.)
   Gemma model in-browser via Google's LiteRT-LM Web runtime
   (`@litert-lm/core`, WebGPU). Summaries live in an in-memory store
   (`src/state/summaryStore.ts`) — a reload clears them, by design.
+- **Companion window** (🗗 in the header): pops Home's summary cards out
+  into a real, separate browser window — pinning the widget first if it
+  isn't already, since the popup only works while the original widget
+  iframe stays mounted somewhere in Element. This is a *display and remote-
+  control* surface, not a second copy of the widget: the popup has no
+  Widget API connection of its own (no `widgetId`/`parentUrl` to hand-shake
+  with), so it talks to the real widget over a same-origin
+  `BroadcastChannel` relay (`src/companion/relay.ts`) instead — every
+  Sync/refresh click in the popup runs on the original widget (reusing the
+  same `src/agent/sync.ts` used by Home's own buttons, including its
+  already-warmed local model, rather than loading a second copy in the new
+  tab), and the popup just mirrors whatever the widget's summaries/settings
+  stores currently hold. It therefore sees exactly the same history-loading
+  ceiling described in "Known follow-ups" below — a bigger, movable window
+  doesn't unlock more room history, just a more comfortable place to browse
+  what's already there. (Document Picture-in-Picture was tried first and
+  ruled out — Chromium unconditionally rejects `requestWindow()` from any
+  iframe, regardless of Permissions-Policy.)
 
 ## Architecture
 

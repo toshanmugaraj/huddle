@@ -6,6 +6,9 @@ import { widgetApiPromise } from './widget';
 import { rawWidgetApi } from './matrix/rawApi';
 import { AppRoutes } from './routes/AppRoutes';
 import { initLangfuseTelemetry } from './agent/langfuseTelemetry';
+import { isCompanion } from './companion/relay';
+import { startCompanionHost } from './companion/hostBootstrap';
+import { CompanionApp } from './companion/CompanionApp';
 
 // No-ops unless VITE_LANGFUSE_* env vars were set at build time (see
 // .env.example and langfuseTelemetry.ts's file comment) — must run before
@@ -44,13 +47,31 @@ function ThemeSync() {
   return null;
 }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <MuiThemeProvider>
-      <ThemeSync />
-      <MuiWidgetApiProvider widgetApiPromise={widgetApiPromise}>
-        <AppRoutes />
-      </MuiWidgetApiProvider>
-    </MuiThemeProvider>
-  </StrictMode>,
-);
+// The companion window (opened via companion/popout.ts) is a plain page,
+// not a Matrix Widget — no widgetId/parentUrl, so WidgetApiImpl.create()
+// would just hang waiting for a handshake that's never coming. It talks to
+// the REAL widget instead, over companion/relay.ts's BroadcastChannel
+// bridge — see that file's comment for the whole story. startCompanionHost()
+// is the other half of that bridge, run only in the real-widget path below.
+if (isCompanion) {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <MuiThemeProvider>
+        <CompanionApp />
+      </MuiThemeProvider>
+    </StrictMode>,
+  );
+} else {
+  startCompanionHost();
+
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <MuiThemeProvider>
+        <ThemeSync />
+        <MuiWidgetApiProvider widgetApiPromise={widgetApiPromise}>
+          <AppRoutes />
+        </MuiWidgetApiProvider>
+      </MuiThemeProvider>
+    </StrictMode>,
+  );
+}
