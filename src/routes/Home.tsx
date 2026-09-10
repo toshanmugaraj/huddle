@@ -73,13 +73,19 @@ export function Home() {
     setSummary(roomId, { status: 'summarizing' });
     try {
       const roomName = await getRoomName(widgetApi, roomId);
-      const messages = await getMessagesSince(widgetApi, roomId, settings.historyDaysBack);
+      const { messages, complete, availableDaysBack } = await getMessagesSince(
+        widgetApi,
+        roomId,
+        settings.historyDaysBack,
+      );
 
       if (messages.length === 0) {
         setSummary(roomId, {
           roomName,
           status: 'no-messages',
           daysBack: settings.historyDaysBack,
+          complete,
+          availableDaysBack,
           syncedAt: Date.now(),
         });
         return;
@@ -91,6 +97,8 @@ export function Home() {
         summary,
         messageCount: messages.length,
         daysBack: settings.historyDaysBack,
+        complete,
+        availableDaysBack,
         status: 'done',
         syncedAt: Date.now(),
       });
@@ -308,13 +316,17 @@ function SummaryCard({
               {summary.messageCount} message{summary.messageCount === 1 ? '' : 's'} from {daysSentence(summary.daysBack)}{' '}
               · synced {summary.syncedAt && new Date(summary.syncedAt).toLocaleTimeString()}
             </Typography>
+            <CoverageNote summary={summary} />
           </>
         )}
 
         {summary?.status === 'no-messages' && (
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            No messages from {daysSentence(summary.daysBack)}.
-          </Typography>
+          <>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              No messages from {daysSentence(summary.daysBack)}.
+            </Typography>
+            <CoverageNote summary={summary} />
+          </>
         )}
 
         {summary?.status === 'error' && (
@@ -330,6 +342,37 @@ function SummaryCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Warns when a card's summary might not actually cover the requested
+ * history window — see messages.ts's MessagesSinceResult doc comment for
+ * why: the widget API can only read whatever room history Element already
+ * has loaded locally, with no way to request further homeserver backfill,
+ * so "no messages" or a short summary can just as easily mean "Element
+ * hadn't loaded that far back" as "the room was quiet." Silent otherwise
+ * (renders nothing) — a fully-covered card needs no extra caption.
+ *
+ * `daysTickLabel`, not `daysSentence`, for the *available* side — matches
+ * the compact "Today"/"N days" form the top slider itself uses, so a
+ * room's real local coverage reads as directly comparable to the slider's
+ * own value rather than in different prose.
+ */
+function CoverageNote({ summary }: { summary: RoomSummary }) {
+  if (summary.complete) return null;
+  return (
+    <Tooltip
+      title={
+        "Element only lets a widget read room history it's already loaded locally — it can't ask the " +
+        'server for more. Open this room in Element, scroll back further so it loads, then refresh this card.'
+      }
+    >
+      <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 0.5 }}>
+        ⚠️ Only {daysTickLabel(summary.availableDaysBack)} of history available locally (requested{' '}
+        {daysTickLabel(summary.daysBack)})
+      </Typography>
+    </Tooltip>
   );
 }
 

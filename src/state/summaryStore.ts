@@ -14,6 +14,17 @@ export interface RoomSummary {
    * before running Sync again.
    */
   daysBack: number;
+  /**
+   * Same meaning as messages.ts's MessagesSinceResult — whether this room's
+   * summary actually covers the full `daysBack` window, or whether Element
+   * simply hadn't loaded that much local history for this room at sync
+   * time (see getMessagesSince's doc comment on why the widget API can't
+   * tell "quiet room" apart from "not loaded yet"). Surfaced on the card so
+   * an incomplete window isn't presented as if it were a complete one.
+   */
+  complete: boolean;
+  /** Same meaning as MessagesSinceResult.availableDaysBack, snapshotted at sync time alongside `complete`. */
+  availableDaysBack: number;
   syncedAt?: number;
   status: SummaryStatus;
   error?: string;

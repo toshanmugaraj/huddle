@@ -170,6 +170,23 @@ pulled back out for now; may come back if/when it's actually needed.)
 
 ## Known follow-ups (not yet built)
 
+- **The history slider can't force the server for more than Element already
+  has loaded.** The widget API (`receiveRoomEvents`, backed by
+  `readRoomTimeline`) only ever returns events already sitting in Element's
+  local, in-memory timeline for a room — verified against element-web's
+  `ElementWidgetDriver.readRoomTimeline`, which just walks
+  `room.getLiveTimeline().getEvents()`; there's no capability to request
+  further homeserver backfill by date, and `since` there is an event-ID
+  cursor into that same in-memory set, not a timestamp. So a large
+  `historyDaysBack` can silently under-cover a room if Element hasn't
+  paginated back that far locally (Element's own `TimelinePanel` only loads
+  30 events on room open, extending as a human scrolls). `getMessagesSince`
+  (`src/matrix/messages.ts`) surfaces this as `complete`/`availableDaysBack`
+  on its result, and each summary card shows a warning + the real number of
+  days actually available locally when the requested window isn't fully
+  backed by data — but there's no way to force Element to load more from
+  inside the widget sandbox; the workaround is opening the room in Element
+  and scrolling back further yourself, then refreshing that card.
 - **Model-load progress** is an indeterminate spinner, not a real byte
   progress bar — `Engine.create()` doesn't expose one directly for either
   model source (bundled URL or uploaded `Blob`); a real bar means fetching

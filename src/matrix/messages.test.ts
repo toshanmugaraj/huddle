@@ -41,18 +41,18 @@ describe('getMessagesSince', () => {
     widgetApi.mockSendRoomEvent(messageEvent('$2', START_OF_TODAY, 'right at midnight'));
     widgetApi.mockSendRoomEvent(messageEvent('$3', NOW, 'this afternoon'));
 
-    const messages = await getMessagesSince(widgetApi, ROOM_ID, 0);
+    const result = await getMessagesSince(widgetApi, ROOM_ID, 0);
 
-    expect(messages.map((m) => m.body)).toEqual(['right at midnight', 'this afternoon']);
+    expect(result.messages.map((m) => m.body)).toEqual(['right at midnight', 'this afternoon']);
   });
 
   it('returns nothing when there are no messages yet today', async () => {
     widgetApi = mockWidgetApi();
     widgetApi.mockSendRoomEvent(messageEvent('$1', START_OF_TODAY - 1000, 'yesterday'));
 
-    const messages = await getMessagesSince(widgetApi, ROOM_ID, 0);
+    const result = await getMessagesSince(widgetApi, ROOM_ID, 0);
 
-    expect(messages).toEqual([]);
+    expect(result.messages).toEqual([]);
   });
 
   it('skips events with no text body', async () => {
@@ -67,9 +67,9 @@ describe('getMessagesSince', () => {
       content: { msgtype: 'm.image' },
     });
 
-    const messages = await getMessagesSince(widgetApi, ROOM_ID, 0);
+    const result = await getMessagesSince(widgetApi, ROOM_ID, 0);
 
-    expect(messages.map((m) => m.body)).toEqual(['first']);
+    expect(result.messages.map((m) => m.body)).toEqual(['first']);
   });
 
   it('with daysBack: 1, extends the window back to include yesterday too (2 calendar days total)', async () => {
@@ -78,9 +78,9 @@ describe('getMessagesSince', () => {
     widgetApi.mockSendRoomEvent(messageEvent('$2', START_OF_YESTERDAY, 'right at yesterday midnight'));
     widgetApi.mockSendRoomEvent(messageEvent('$3', NOW, 'this afternoon'));
 
-    const messages = await getMessagesSince(widgetApi, ROOM_ID, 1);
+    const result = await getMessagesSince(widgetApi, ROOM_ID, 1);
 
-    expect(messages.map((m) => m.body)).toEqual(['right at yesterday midnight', 'this afternoon']);
+    expect(result.messages.map((m) => m.body)).toEqual(['right at yesterday midnight', 'this afternoon']);
   });
 
   it('with daysBack: 3, covers 4 calendar days total', async () => {
@@ -89,8 +89,54 @@ describe('getMessagesSince', () => {
     widgetApi.mockSendRoomEvent(messageEvent('$2', START_OF_3_DAYS_AGO, 'right at the cutoff'));
     widgetApi.mockSendRoomEvent(messageEvent('$3', NOW, 'this afternoon'));
 
-    const messages = await getMessagesSince(widgetApi, ROOM_ID, 3);
+    const result = await getMessagesSince(widgetApi, ROOM_ID, 3);
 
-    expect(messages.map((m) => m.body)).toEqual(['right at the cutoff', 'this afternoon']);
+    expect(result.messages.map((m) => m.body)).toEqual(['right at the cutoff', 'this afternoon']);
+  });
+
+  describe('complete / availableDaysBack', () => {
+    it('is complete, with availableDaysBack 0, when there are no messages loaded at all', async () => {
+      widgetApi = mockWidgetApi();
+
+      const result = await getMessagesSince(widgetApi, ROOM_ID, 3);
+
+      expect(result).toMatchObject({ complete: true, availableDaysBack: 0 });
+    });
+
+    it('is complete when the earliest loaded message reaches back at least as far as the cutoff', async () => {
+      widgetApi = mockWidgetApi();
+      // Loaded history reaches back 3 days — exactly as far as requested.
+      widgetApi.mockSendRoomEvent(messageEvent('$1', START_OF_3_DAYS_AGO, 'right at the cutoff'));
+      widgetApi.mockSendRoomEvent(messageEvent('$2', NOW, 'this afternoon'));
+
+      const result = await getMessagesSince(widgetApi, ROOM_ID, 3);
+
+      expect(result).toMatchObject({ complete: true, availableDaysBack: 3 });
+    });
+
+    it('is NOT complete when the earliest loaded message is newer than the cutoff — Element just hasn’t loaded that far back', async () => {
+      widgetApi = mockWidgetApi();
+      // Only 1 day of history is actually loaded, but 3 were requested.
+      widgetApi.mockSendRoomEvent(messageEvent('$1', START_OF_YESTERDAY, 'oldest loaded message'));
+      widgetApi.mockSendRoomEvent(messageEvent('$2', NOW, 'this afternoon'));
+
+      const result = await getMessagesSince(widgetApi, ROOM_ID, 3);
+
+      expect(result).toMatchObject({ complete: false, availableDaysBack: 1 });
+      // The messages themselves are still whatever falls inside the
+      // (possibly under-covered) window — incompleteness is reported
+      // alongside them, not hidden by returning fewer/no messages.
+      expect(result.messages.map((m) => m.body)).toEqual(['oldest loaded message', 'this afternoon']);
+    });
+
+    it('availableDaysBack can exceed daysBack when more history happens to be loaded than requested', async () => {
+      widgetApi = mockWidgetApi();
+      widgetApi.mockSendRoomEvent(messageEvent('$1', START_OF_3_DAYS_AGO, 'well before the requested window'));
+      widgetApi.mockSendRoomEvent(messageEvent('$2', NOW, 'this afternoon'));
+
+      const result = await getMessagesSince(widgetApi, ROOM_ID, 1);
+
+      expect(result).toMatchObject({ complete: true, availableDaysBack: 3 });
+    });
   });
 });
