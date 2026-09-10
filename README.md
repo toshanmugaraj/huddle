@@ -19,6 +19,12 @@ purpose; see the PR/commit that did the rename for why.)
 
 (Links download/open the `.mov` file rather than playing inline.)
 
+## Screenshots
+
+**Home tab — history slider and per-room refresh:**
+
+![Home tab: Sync with a history-range slider, and per-room summary cards each with their own refresh button](docs/screenshots/sync-history.png)
+
 ## How it works
 
 - **Settings**: add rooms by ID/alias, pick a Gemma variant, edit the
