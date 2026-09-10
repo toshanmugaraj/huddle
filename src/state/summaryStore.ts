@@ -7,6 +7,13 @@ export interface RoomSummary {
   roomName: string;
   summary: string;
   messageCount: number;
+  /**
+   * Same meaning as HuddleSettings.historyDaysBack, snapshotted at sync
+   * time — so a card's "N messages over the last N+1 days" caption stays
+   * accurate even if the user moves the history slider again afterward,
+   * before running Sync again.
+   */
+  daysBack: number;
   syncedAt?: number;
   status: SummaryStatus;
   error?: string;

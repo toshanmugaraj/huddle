@@ -13,6 +13,18 @@ export interface HuddleSettings {
   localModel: GemmaModelId;
   geminiModel: GeminiModelId;
   instruction: string;
+  /**
+   * How many *extra* calendar days before today Sync also pulls in — 0 is
+   * today only (this app's original, and still the default, behavior); N
+   * extends that window to include the N previous days too, so the total
+   * span covered is N+1 calendar days. Deliberately not "N = total days":
+   * that reading makes 0 and 1 both mean "today only" (last 1 day = last 0
+   * days), an indistinguishable, do-nothing slider step right where a user
+   * is most likely to try it first. See Home.tsx's history slider and
+   * matrix/messages.ts's getMessagesSince, which this is passed straight
+   * into.
+   */
+  historyDaysBack: number;
 }
 
 // The Gemini API key is deliberately NOT part of this interface — it lives
@@ -28,6 +40,7 @@ export const DEFAULT_SETTINGS: HuddleSettings = {
   mode: 'local',
   localModel: 'gemma-4-e2b',
   geminiModel: 'gemini-3.6-flash',
+  historyDaysBack: 0,
   // Asking for Markdown, not HTML: every model tried — Gemini included, and
   // especially the on-device Gemma — reliably ignores an "output raw HTML
   // tags" instruction and writes Markdown anyway, presumably because
@@ -37,7 +50,12 @@ export const DEFAULT_SETTINGS: HuddleSettings = {
   // produce is both simpler to write and more reliable than fighting that
   // bias — see that file's comment for the fuller story.
   instruction:
-    "You are an expert technical documentation assistant summarizing today's messages in this " +
+    // "the given messages", not "today's messages" — the Home tab's history
+    // slider (historyDaysBack above) can hand this a multi-day range, and
+    // the per-request "Date: .../Messages from ...:" header (see
+    // summarize.ts) already tells the model exactly what span it's looking
+    // at, so this default shouldn't bake in an assumption of exactly one day.
+    'You are an expert technical documentation assistant summarizing the given messages in this ' +
     'room. Ignore off-topic banter, jokes, or ambient greetings. Group related discussion into ' +
     'clear, thematic bullet points rather than a chronological recap. Call out any direct ' +
     'questions or action items addressed to me. Format the response as simple Markdown: start ' +
