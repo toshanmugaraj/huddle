@@ -157,7 +157,8 @@ export function buildChatTools(
     name: 'get_room_messages',
     description:
       'Reads the most recent messages in a Matrix room, regardless of date — use this for follow-up ' +
-      "questions that need more history than what was already summarized (Sync only covers today).",
+      'questions that need more history than what was already summarized (Sync only covers the ' +
+      'day range chosen with the Home tab\'s history slider, today by default).',
     inputSchema: z.object({
       roomId: z.string().describe('The room ID, e.g. "!abc123:example.com".'),
       limit: z.number().int().min(1).max(100).default(20).describe('How many recent messages to fetch.'),

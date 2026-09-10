@@ -31,11 +31,16 @@ function toRoomMessage(m: Awaited<ReturnType<typeof fetchSortedTextMessages>>[nu
 }
 
 /**
- * `m.room.message` events in `roomId` sent since local midnight — i.e.
- * "today", in whatever timezone the browser is in. Regardless of read
- * state, and independent of any previous sync: unlike an unread/bookmark
- * approach, re-running Sync with nothing new since the last click still
- * returns (and re-summarizes) the same messages instead of finding
+ * `m.room.message` events in `roomId` sent since local midnight `daysBack`
+ * days ago — `daysBack: 0` is "today" (this app's original, and still the
+ * default, behavior), in whatever timezone the browser is in; `daysBack: N`
+ * extends that window back to include the N previous calendar days too, so
+ * the total span covered is N+1 calendar days. Backs the Home tab's
+ * history slider (see Home.tsx and settingsSync.ts's `historyDaysBack` for
+ * why it's framed as "extra days back," not "total days"). Regardless of
+ * read state, and independent of any previous sync: unlike an unread/
+ * bookmark approach, re-running Sync with nothing new since the last click
+ * still returns (and re-summarizes) the same messages instead of finding
  * "nothing new" and clearing what was already shown.
  *
  * This app previously tracked "unread" via the Matrix `m.fully_read`
@@ -46,18 +51,23 @@ function toRoomMessage(m: Awaited<ReturnType<typeof fetchSortedTextMessages>>[nu
  * mainline-Element handler, so it silently never worked on a real Element
  * client anyway — every sync fell through to the bookmark regardless.
  */
-export async function getTodayMessages(widgetApi: WidgetApi, roomId: string): Promise<RoomMessage[]> {
+export async function getMessagesSince(
+  widgetApi: WidgetApi,
+  roomId: string,
+  daysBack: number,
+): Promise<RoomMessage[]> {
   const sorted = await fetchSortedTextMessages(widgetApi, roomId);
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  return sorted.filter((m) => m.origin_server_ts >= startOfToday.getTime()).map(toRoomMessage);
+  const cutoff = new Date();
+  cutoff.setHours(0, 0, 0, 0);
+  cutoff.setDate(cutoff.getDate() - daysBack);
+  return sorted.filter((m) => m.origin_server_ts >= cutoff.getTime()).map(toRoomMessage);
 }
 
 /**
  * Last `limit` text messages in `roomId`, regardless of date or read
  * state — used by the chat tab's get_room_messages tool so the agent can
  * pull more context than "today" for a follow-up question. Same
- * underlying timeline read as getTodayMessages; the wrapped WidgetApi
+ * underlying timeline read as getMessagesSince; the wrapped WidgetApi
  * surface has no server-side limit/pagination for it, so this fetches
  * everything available and slices client-side.
  */

@@ -1,16 +1,35 @@
-import { useEffect, useState } from 'react';
-import { Alert, Box, Button, Card, CardContent, Chip, Stack, Typography } from '@mui/material';
+import { useEffect, useState, type SyntheticEvent } from 'react';
+import { Alert, Box, Button, Card, CardContent, Chip, Slider, Stack, Typography } from '@mui/material';
 import { useWidgetApi } from '@matrix-widget-toolkit/react';
-import { loadSettings } from '../matrix/settingsSync';
+import { loadSettings, saveSettings } from '../matrix/settingsSync';
 import { getRoomName } from '../matrix/rooms';
 import { useResolveRoomNames } from '../matrix/useResolveRoomNames';
-import { getTodayMessages } from '../matrix/messages';
+import { getMessagesSince } from '../matrix/messages';
 import { summarizeRoom, prepareModel } from '../agent/summarize';
 import { useSettingsStore } from '../state/settingsStore';
 import { useSummaryStore, type RoomSummary } from '../state/summaryStore';
 import { useModelStore } from '../state/modelStore';
 import { useApiKeyStore } from '../state/apiKeyStore';
 import { sanitizeSummaryHtml } from '../utils/sanitizeSummaryHtml';
+
+const MAX_HISTORY_DAYS_BACK = 7;
+
+/**
+ * "Today" / "2 days" / ... — same "0 = today, N = N extra days back"
+ * framing as settingsSync.ts's historyDaysBack doc comment, just the
+ * compact form for the slider's own tick marks (see daysSentence below for
+ * the prose form used in captions/the prompt sent to the model).
+ */
+function daysTickLabel(daysBack: number): string {
+  const totalDays = daysBack + 1;
+  return totalDays === 1 ? 'Today' : `${totalDays} days`;
+}
+
+/** "today" / "the last 2 days" / ... — the prose form, for a summary card's message-count caption. */
+function daysSentence(daysBack: number): string {
+  const totalDays = daysBack + 1;
+  return totalDays === 1 ? 'today' : `the last ${totalDays} days`;
+}
 
 export function Home() {
   const widgetApi = useWidgetApi();
@@ -63,22 +82,24 @@ export function Home() {
 
         try {
           const roomName = await getRoomName(widgetApi, roomId);
-          const messages = await getTodayMessages(widgetApi, roomId);
+          const messages = await getMessagesSince(widgetApi, roomId, settings.historyDaysBack);
 
           if (messages.length === 0) {
             setSummary(roomId, {
               roomName,
               status: 'no-messages',
+              daysBack: settings.historyDaysBack,
               syncedAt: Date.now(),
             });
             continue;
           }
 
-          const summary = await summarizeRoom(roomName, messages, settings, geminiApiKey);
+          const summary = await summarizeRoom(roomName, messages, settings, geminiApiKey, settings.historyDaysBack);
           setSummary(roomId, {
             roomName,
             summary,
             messageCount: messages.length,
+            daysBack: settings.historyDaysBack,
             status: 'done',
             syncedAt: Date.now(),
           });
@@ -95,6 +116,23 @@ export function Home() {
       setSyncing(false);
       setProgress(undefined);
     }
+  };
+
+  // Live while dragging (cheap, local-only) — persisting to the Matrix
+  // state event on every pixel of drag would be both wasteful and, on a
+  // slow connection, visibly laggy. Actual persistence happens once, in
+  // handleHistoryCommit below, when the drag/keyboard interaction ends.
+  const handleHistoryChange = (_event: Event, value: number | number[]) => {
+    setSettings({ ...settings, historyDaysBack: Array.isArray(value) ? value[0] : value });
+  };
+
+  const handleHistoryCommit = (_event: Event | SyntheticEvent, value: number | number[]) => {
+    const historyDaysBack = Array.isArray(value) ? value[0] : value;
+    // Fire-and-forget: the slider (and the next Sync) already reflect the
+    // new value locally via handleHistoryChange/setSettings regardless of
+    // whether this write reaches the room — same "best effort, not
+    // surfaced as a sync error" tradeoff as AppRoutes.tsx's pin toggle.
+    void saveSettings(widgetApi, userId, { ...settings, historyDaysBack });
   };
 
   if (!loaded) {
@@ -115,6 +153,29 @@ export function Home() {
         <Button variant="contained" onClick={handleSync} disabled={syncing}>
           {syncing ? 'Syncing…' : 'Sync'}
         </Button>
+        {/* How far back Sync looks — 0 (the left end, and the default) is
+            "today" only; see settingsSync.ts's historyDaysBack doc comment
+            for why each step is framed as "one more day back" rather than
+            "N total days" (the latter makes the first two positions
+            indistinguishable). Persisted, so it survives a reload same as
+            the rest of Settings — see handleHistoryCommit. */}
+        <Slider
+          size="small"
+          value={settings.historyDaysBack}
+          onChange={handleHistoryChange}
+          onChangeCommitted={handleHistoryCommit}
+          min={0}
+          max={MAX_HISTORY_DAYS_BACK}
+          step={1}
+          marks
+          valueLabelDisplay="auto"
+          valueLabelFormat={daysTickLabel}
+          disabled={syncing}
+          sx={{ width: 120 }}
+        />
+        <Typography variant="body2" color="text.secondary">
+          {daysTickLabel(settings.historyDaysBack)}
+        </Typography>
         {progress && (
           <Typography variant="body2" color="text.secondary">
             {progress}
@@ -171,15 +232,15 @@ function SummaryCard({
               dangerouslySetInnerHTML={{ __html: sanitizeSummaryHtml(summary.summary) }}
             />
             <Typography variant="caption" color="text.secondary">
-              {summary.messageCount} message{summary.messageCount === 1 ? '' : 's'} today · synced{' '}
-              {summary.syncedAt && new Date(summary.syncedAt).toLocaleTimeString()}
+              {summary.messageCount} message{summary.messageCount === 1 ? '' : 's'} from {daysSentence(summary.daysBack)}{' '}
+              · synced {summary.syncedAt && new Date(summary.syncedAt).toLocaleTimeString()}
             </Typography>
           </>
         )}
 
         {summary?.status === 'no-messages' && (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            No messages today.
+            No messages from {daysSentence(summary.daysBack)}.
           </Typography>
         )}
 

@@ -1,7 +1,8 @@
 # Huddle
 
-A Matrix widget that summarizes today's messages across
-rooms you choose, entirely on-device — no backend, no network call carries
+A Matrix widget that summarizes recent messages (today by default, or
+further back via a history slider) across rooms you choose, entirely
+on-device — no backend, no network call carries
 message content anywhere. This design assumes WebGPU is available and
 usable from inside a real Element widget iframe (confirmed by hand before
 this was built); there's no fallback path for an environment where it
@@ -24,7 +25,9 @@ purpose; see the PR/commit that did the rename for why.)
   summary instruction. Persisted as a state event in the widget's own room
   (`io.github.chatsummary.settings`, state-keyed per user).
 - **Home**: hit **Sync** to walk your selected rooms one at a time, gather
-  each room's messages from today (see `src/matrix/messages.ts`), and
+  each room's messages since local midnight N days back — the history
+  slider next to Sync, 0 (today only) by default, up to 7 (last 8 days);
+  see `src/matrix/messages.ts`'s `getMessagesSince` — and
   summarize them with a Strands `Agent` (`src/agent/summarize.ts`) backed by
   a custom `Model` (`src/model/GemmaEdgeModel.ts`) that runs a quantized
   Gemma model in-browser via Google's LiteRT-LM Web runtime
@@ -93,7 +96,7 @@ Custom).
 
 ```sh
 npm run build   # production bundle, dist/
-npm test        # vitest — today's-messages filtering logic covered so far
+npm test        # vitest — history-range message filtering logic covered so far
 ```
 
 ## Configuring the model in Settings
@@ -173,5 +176,5 @@ pulled back out for now; may come back if/when it's actually needed.)
 - **Mobile Element** is out of scope — WebGPU + a multi-GB local model
   isn't realistic in a mobile webview; there's no feature-detect banner
   for that yet.
-- Only the `getTodayMessages` logic has tests so far; the screens and
+- Only the `getMessagesSince` logic has tests so far; the screens and
   `GemmaEdgeModel` don't.

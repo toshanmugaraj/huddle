@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockWidgetApi, type MockedWidgetApi } from '@matrix-widget-toolkit/testing';
-import { getTodayMessages } from './messages';
+import { getMessagesSince } from './messages';
 
 const ROOM_ID = '!room-id:example.com';
 
@@ -15,13 +15,15 @@ function messageEvent(eventId: string, ts: number, body: string) {
   };
 }
 
-describe('getTodayMessages', () => {
+describe('getMessagesSince', () => {
   let widgetApi: MockedWidgetApi;
 
   // Pinned so "today" is deterministic: 2024-06-15 12:00:00 local time,
   // i.e. local midnight for that day is a known, fixed timestamp.
   const NOW = new Date(2024, 5, 15, 12, 0, 0).getTime();
   const START_OF_TODAY = new Date(2024, 5, 15, 0, 0, 0).getTime();
+  const START_OF_YESTERDAY = new Date(2024, 5, 14, 0, 0, 0).getTime();
+  const START_OF_3_DAYS_AGO = new Date(2024, 5, 12, 0, 0, 0).getTime();
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -33,13 +35,13 @@ describe('getTodayMessages', () => {
     widgetApi?.stop();
   });
 
-  it('excludes messages from before local midnight and includes ones from today', async () => {
+  it('with daysBack: 0, excludes messages from before local midnight and includes ones from today', async () => {
     widgetApi = mockWidgetApi();
     widgetApi.mockSendRoomEvent(messageEvent('$1', START_OF_TODAY - 1000, 'yesterday'));
     widgetApi.mockSendRoomEvent(messageEvent('$2', START_OF_TODAY, 'right at midnight'));
     widgetApi.mockSendRoomEvent(messageEvent('$3', NOW, 'this afternoon'));
 
-    const messages = await getTodayMessages(widgetApi, ROOM_ID);
+    const messages = await getMessagesSince(widgetApi, ROOM_ID, 0);
 
     expect(messages.map((m) => m.body)).toEqual(['right at midnight', 'this afternoon']);
   });
@@ -48,7 +50,7 @@ describe('getTodayMessages', () => {
     widgetApi = mockWidgetApi();
     widgetApi.mockSendRoomEvent(messageEvent('$1', START_OF_TODAY - 1000, 'yesterday'));
 
-    const messages = await getTodayMessages(widgetApi, ROOM_ID);
+    const messages = await getMessagesSince(widgetApi, ROOM_ID, 0);
 
     expect(messages).toEqual([]);
   });
@@ -65,8 +67,30 @@ describe('getTodayMessages', () => {
       content: { msgtype: 'm.image' },
     });
 
-    const messages = await getTodayMessages(widgetApi, ROOM_ID);
+    const messages = await getMessagesSince(widgetApi, ROOM_ID, 0);
 
     expect(messages.map((m) => m.body)).toEqual(['first']);
+  });
+
+  it('with daysBack: 1, extends the window back to include yesterday too (2 calendar days total)', async () => {
+    widgetApi = mockWidgetApi();
+    widgetApi.mockSendRoomEvent(messageEvent('$1', START_OF_YESTERDAY - 1000, '2 days ago'));
+    widgetApi.mockSendRoomEvent(messageEvent('$2', START_OF_YESTERDAY, 'right at yesterday midnight'));
+    widgetApi.mockSendRoomEvent(messageEvent('$3', NOW, 'this afternoon'));
+
+    const messages = await getMessagesSince(widgetApi, ROOM_ID, 1);
+
+    expect(messages.map((m) => m.body)).toEqual(['right at yesterday midnight', 'this afternoon']);
+  });
+
+  it('with daysBack: 3, covers 4 calendar days total', async () => {
+    widgetApi = mockWidgetApi();
+    widgetApi.mockSendRoomEvent(messageEvent('$1', START_OF_3_DAYS_AGO - 1000, 'too old'));
+    widgetApi.mockSendRoomEvent(messageEvent('$2', START_OF_3_DAYS_AGO, 'right at the cutoff'));
+    widgetApi.mockSendRoomEvent(messageEvent('$3', NOW, 'this afternoon'));
+
+    const messages = await getMessagesSince(widgetApi, ROOM_ID, 3);
+
+    expect(messages.map((m) => m.body)).toEqual(['right at the cutoff', 'this afternoon']);
   });
 });

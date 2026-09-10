@@ -52,6 +52,14 @@ export async function summarizeRoom(
   messages: RoomMessage[],
   settings: Pick<HuddleSettings, 'mode' | 'localModel' | 'geminiModel' | 'instruction'>,
   geminiApiKey: string,
+  /**
+   * Same meaning as HuddleSettings.historyDaysBack — 0 (the default) is
+   * "today", N extends the range to include the N previous calendar days
+   * too. Only used to build the Date/"Messages from" labels below; the
+   * actual filtering already happened in messages.ts's getMessagesSince
+   * before `messages` reached this function.
+   */
+  daysBack = 0,
 ): Promise<string> {
   const model =
     settings.mode === 'local'
@@ -81,18 +89,31 @@ export async function summarizeRoom(
   // Neither model has real-world clock access (Gemma runs fully offline;
   // Gemini isn't told the date either), so an instruction asking for a
   // "Date" field has nothing to go on but a guess unless it's handed the
-  // actual date here — same local-calendar-day boundary getTodayMessages
-  // uses, not toISOString()'s UTC date, which can be a day off near
-  // midnight in most timezones.
+  // actual date (or range) here — same local-calendar-day boundary
+  // getMessagesSince uses, not toISOString()'s UTC date, which can be a
+  // day off near midnight in most timezones.
   const result = await agent.invoke(
-    `Date: ${todayDateLabel()}\nRoom: ${roomName}\n\nMessages from today:\n${transcript}`,
+    `Date: ${dateRangeLabel(daysBack)}\nRoom: ${roomName}\n\nMessages from ${messagesFromLabel(daysBack)}:\n${transcript}`,
   );
   return result.toString().trim();
 }
 
-function todayDateLabel(): string {
-  const d = new Date();
+function dateLabel(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** "2024-06-15", or "2024-06-13 to 2024-06-15" once daysBack pulls in prior days too. */
+function dateRangeLabel(daysBack: number): string {
+  const today = new Date();
+  if (daysBack <= 0) return dateLabel(today);
+  const start = new Date(today);
+  start.setDate(start.getDate() - daysBack);
+  return `${dateLabel(start)} to ${dateLabel(today)}`;
+}
+
+/** "today", or "the last N days" once daysBack pulls in prior days too — feeds the transcript's "Messages from ...:" header. */
+function messagesFromLabel(daysBack: number): string {
+  return daysBack <= 0 ? 'today' : `the last ${daysBack + 1} days`;
 }
 
 function buildTranscript(messages: RoomMessage[]): string {
