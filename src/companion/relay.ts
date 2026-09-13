@@ -1,19 +1,38 @@
 // ── Companion-window relay ───────────────────────────────────────────────────
 // Lets Huddle open in a real, separate top-level browser window (via
-// window.open() — see popout.ts) while still driving a Sync. Modeled on
-// CrewBoard's frontend/src/relay.js, which found (and documents, in
-// components/DocumentPip.jsx) that the Document Picture-in-Picture API is
-// permanently blocked from widget iframes — Chromium hard-rejects
-// requestWindow() with NotAllowedError for any iframe, unconditionally,
-// regardless of Permissions-Policy. window.open() has no such restriction,
-// but the new tab has no widgetId/parentUrl, so it can't do its own Widget
-// API handshake (WidgetApiImpl.create() would just time out waiting for an
-// Element host that isn't there). Instead: the ORIGINAL widget iframe (which
-// does have a real Widget API connection) stays mounted and acts as a
-// relay/transport; the popup talks to it over BroadcastChannel, which works
-// between same-origin windows/tabs regardless of iframe/top-level status —
-// unlike Document PiP, nothing here is gated on being a top-level browsing
-// context.
+// window.open() — see popout.ts) while still driving a Sync. The new tab has
+// no widgetId/parentUrl, so it can't do its own Widget API handshake
+// (WidgetApiImpl.create() would just time out waiting for an Element host
+// that isn't there). Instead: the ORIGINAL widget iframe (which does have a
+// real Widget API connection) stays mounted and acts as a relay/transport;
+// the popup talks to it directly over window.postMessage(), using the live
+// window.opener reference window.open() leaves behind.
+//
+// Transport history/why NOT BroadcastChannel, despite CrewBoard's relay.js
+// (frontend/src/relay.js in crewboard-open) using exactly that: verified
+// live (2026-09-13) that a BroadcastChannel of the same name does NOT bridge
+// the widget iframe and the companion popup once Element itself is hosted on
+// a different site than the widget — e.g. widget on dune.wahatbh.com,
+// Element on app.element.io. It DID work when Element was hosted on a
+// sibling wahatbh.com subdomain instead. That's Chrome's storage
+// partitioning: BroadcastChannel is partitioned by the *top-level site* a
+// context is embedded under, not just by origin, so a third-party iframe
+// (widget, embedded under Element's site) and an unpartitioned top-level tab
+// (the companion, opened via window.open()) land in different partitions
+// even though both are nominally the exact same origin. Verified from
+// element-web's own source that this isn't a sandboxed-iframe/opaque-origin
+// issue instead — AppTile.tsx's sandboxFlags include `allow-same-origin` and
+// `allow-popups-to-escape-sandbox`, so the widget iframe carries its real
+// origin and window.open() from inside it produces a normal, unsandboxed
+// top-level window.
+//
+// window.postMessage() between the popup and window.opener sidesteps
+// partitioning entirely — it's a direct reference between two Window
+// objects, not mediated by any shared browser storage, so it works
+// regardless of what site embeds the widget. Document Picture-in-Picture
+// (an alternative "new window" mechanism CrewBoard's DocumentPip.jsx
+// evaluated first) is not an option here either: Chromium unconditionally
+// rejects requestWindow() from any iframe, regardless of Permissions-Policy.
 //
 // Unlike CrewBoard's relay (which exposes low-level Matrix primitives like
 // sendMessage/readInbox one-for-one), this one exposes exactly two
@@ -28,10 +47,12 @@
 // logic to keep in sync with agent/sync.ts.
 //
 // Constraint this implies: the popup only works while the original widget
-// iframe is still alive somewhere in Element — see popout.ts's openCompanionWindow(),
-// which pins the widget first for exactly this reason.
+// iframe is still alive somewhere in Element — see popout.ts's
+// openCompanionWindow(), which pins the widget first for exactly this
+// reason — AND while window.opener hasn't been severed (a fresh page load
+// of the popup's URL typed/pasted directly, rather than opened via the 🗗
+// button, has no opener at all; see call()'s upfront check for that case).
 
-const CHANNEL_NAME = 'huddle-companion-relay';
 const HELLO_TIMEOUT_MS = 4000;
 // syncAll can legitimately take a while (multi-GB model prep on first use,
 // then one inference call per room, sequentially) — comfortably longer than
@@ -41,26 +62,28 @@ const HELLO_TIMEOUT_MS = 4000;
 const SYNC_RPC_TIMEOUT_MS = 5 * 60 * 1000;
 const RPC_TIMEOUT_MS = 20000;
 
+// Tags every message this relay sends so its window 'message' listeners
+// (both sides use the same global event, alongside whatever else the page
+// happens to post to itself) can cheaply ignore anything that isn't ours,
+// without throwing on unrelated shapes.
+const MESSAGE_SOURCE = 'huddle-companion-relay';
+
 const params = new URLSearchParams(window.location.search);
 export const isCompanion = params.get('companion') === '1';
-
-let channel: BroadcastChannel | null = null;
-function getChannel(): BroadcastChannel {
-  channel ??= new BroadcastChannel(CHANNEL_NAME);
-  return channel;
-}
 
 function rpcId(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 interface RequestMessage {
+  source: typeof MESSAGE_SOURCE;
   kind: 'request';
   id: string;
   method: string;
   args?: unknown;
 }
 interface ResponseMessage {
+  source: typeof MESSAGE_SOURCE;
   kind: 'response';
   id: string;
   ok: boolean;
@@ -68,11 +91,16 @@ interface ResponseMessage {
   error?: string;
 }
 interface PushMessage {
+  source: typeof MESSAGE_SOURCE;
   kind: 'push';
   channel: string;
   data: unknown;
 }
 type RelayMessage = RequestMessage | ResponseMessage | PushMessage;
+
+function isRelayMessage(data: unknown): data is RelayMessage {
+  return !!data && typeof data === 'object' && (data as { source?: unknown }).source === MESSAGE_SOURCE;
+}
 
 /** What the host (the real widget) actually does for each RPC method — wired up in hostBootstrap.ts, which has the real widgetApi/store access this module deliberately doesn't. */
 export interface HostHandlers {
@@ -83,60 +111,104 @@ export interface HostHandlers {
 
 // ── Host side (runs inside the real widget iframe) ──────────────────────────
 let hostStarted = false;
+// Set by popout.ts right after window.open() succeeds — the host's only way
+// to reach the companion UNPROMPTED (a push, not a reply to some incoming
+// request it already has an `event.source` for). Not persisted/rediscovered
+// any other way: if the widget iframe itself reloads, this resets to null
+// same as hostStarted does, and a still-open companion's next RPC call will
+// simply time out until the user re-opens it via the button.
+let companionWindowRef: Window | null = null;
+
+export function registerCompanionWindow(win: Window | null): void {
+  companionWindowRef = win;
+}
+
 export function startRelayHost(handlers: HostHandlers): void {
   if (hostStarted || isCompanion) return;
   hostStarted = true;
-  const ch = getChannel();
 
-  ch.addEventListener('message', async (ev: MessageEvent<RelayMessage>) => {
+  window.addEventListener('message', (ev: MessageEvent) => {
+    // Same-origin only — see this file's header comment: both sides are
+    // always served from the identical origin, so a mismatch here means the
+    // message isn't from our own companion at all (defense in depth, not a
+    // scenario this app's own popup would ever trigger).
+    if (ev.origin !== window.location.origin) return;
     const msg = ev.data;
-    if (!msg || msg.kind !== 'request') return;
+    if (!isRelayMessage(msg) || msg.kind !== 'request') return;
+    const replyTo = ev.source as Window | null;
+    if (!replyTo) return;
+
+    const respond = (payload: Pick<ResponseMessage, 'ok' | 'result' | 'error'>) => {
+      replyTo.postMessage(
+        { source: MESSAGE_SOURCE, kind: 'response', id: msg.id, ...payload } satisfies ResponseMessage,
+        ev.origin,
+      );
+    };
 
     if (msg.method === 'hello') {
-      ch.postMessage({ kind: 'response', id: msg.id, ok: true } satisfies ResponseMessage);
+      respond({ ok: true });
       return;
     }
 
-    try {
-      let result: unknown;
-      switch (msg.method) {
-        case 'getSnapshot':
-          result = handlers.getSnapshot();
-          break;
-        case 'syncRoom':
-          await handlers.syncRoom((msg.args as { roomId: string }).roomId);
-          break;
-        case 'syncAll':
-          await handlers.syncAll();
-          break;
-        default:
-          throw new Error(`Unknown relay method: ${msg.method}`);
+    (async () => {
+      try {
+        let result: unknown;
+        switch (msg.method) {
+          case 'getSnapshot':
+            result = handlers.getSnapshot();
+            break;
+          case 'syncRoom':
+            await handlers.syncRoom((msg.args as { roomId: string }).roomId);
+            break;
+          case 'syncAll':
+            await handlers.syncAll();
+            break;
+          default:
+            throw new Error(`Unknown relay method: ${msg.method}`);
+        }
+        respond({ ok: true, result });
+      } catch (e) {
+        respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
       }
-      ch.postMessage({ kind: 'response', id: msg.id, ok: true, result } satisfies ResponseMessage);
-    } catch (e) {
-      ch.postMessage({
-        kind: 'response',
-        id: msg.id,
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-      } satisfies ResponseMessage);
-    }
+    })();
   });
 }
 
-/** Forwards a piece of live state (a zustand store's current value, typically) from the host out to any listening companions — see hostBootstrap.ts's store subscriptions. No-op until startRelayHost() has run, and never fires from a companion window itself. */
+/** Forwards a piece of live state (a zustand store's current value, typically) from the host out to the open companion window, if any — see hostBootstrap.ts's store subscriptions. No-op until startRelayHost() has run, never fires from a companion window itself, and silently drops if no companion is currently registered/open. */
 export function broadcastPush(pushChannel: string, data: unknown): void {
   if (isCompanion || !hostStarted) return;
-  getChannel().postMessage({ kind: 'push', channel: pushChannel, data } satisfies PushMessage);
+  if (!companionWindowRef || companionWindowRef.closed) {
+    companionWindowRef = null;
+    return;
+  }
+  try {
+    companionWindowRef.postMessage(
+      { source: MESSAGE_SOURCE, kind: 'push', channel: pushChannel, data } satisfies PushMessage,
+      window.location.origin,
+    );
+  } catch {
+    // Companion navigated away/closed between the .closed check above and
+    // this call — drop the stale reference rather than keep retrying it.
+    companionWindowRef = null;
+  }
 }
 
 // ── Companion side (runs in the popup) ───────────────────────────────────────
 function call(method: string, args?: unknown, timeoutMs = RPC_TIMEOUT_MS): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const ch = getChannel();
+    if (!window.opener) {
+      reject(
+        new Error(
+          "This window isn't connected to Huddle — open it using the 🗗 button inside the widget " +
+            "in Element, not by opening this URL directly.",
+        ),
+      );
+      return;
+    }
+
     const id = rpcId();
     const timeout = setTimeout(() => {
-      ch.removeEventListener('message', onMsg);
+      window.removeEventListener('message', onMsg);
       reject(
         new Error(
           "Couldn't reach the Huddle widget in Element — keep Huddle open " +
@@ -145,20 +217,24 @@ function call(method: string, args?: unknown, timeoutMs = RPC_TIMEOUT_MS): Promi
       );
     }, timeoutMs);
 
-    function onMsg(ev: MessageEvent<RelayMessage>): void {
+    function onMsg(ev: MessageEvent): void {
+      if (ev.origin !== window.location.origin || ev.source !== window.opener) return;
       const msg = ev.data;
-      if (!msg || msg.kind !== 'response' || msg.id !== id) return;
+      if (!isRelayMessage(msg) || msg.kind !== 'response' || msg.id !== id) return;
       clearTimeout(timeout);
-      ch.removeEventListener('message', onMsg);
+      window.removeEventListener('message', onMsg);
       if (msg.ok) resolve(msg.result);
       else reject(new Error(msg.error));
     }
-    ch.addEventListener('message', onMsg);
-    ch.postMessage({ kind: 'request', id, method, args } satisfies RequestMessage);
+    window.addEventListener('message', onMsg);
+    window.opener.postMessage(
+      { source: MESSAGE_SOURCE, kind: 'request', id, method, args } satisfies RequestMessage,
+      window.location.origin,
+    );
   });
 }
 
-/** Confirms the host widget tab is alive and reachable. Rejects if nothing answers within HELLO_TIMEOUT_MS — the original widget iframe may have been closed/unpinned, or Element itself closed. Call before anything else in the companion. */
+/** Confirms the host widget tab is alive and reachable. Rejects if nothing answers within HELLO_TIMEOUT_MS — the original widget iframe may have been closed/unpinned, or Element itself closed — or immediately if this window has no `window.opener` at all (opened some way other than the 🗗 button). Call before anything else in the companion. */
 export function connectCompanion(): Promise<void> {
   return call('hello', undefined, HELLO_TIMEOUT_MS).then(() => undefined);
 }
@@ -169,12 +245,12 @@ export const companionSyncAll = () => call('syncAll', undefined, SYNC_RPC_TIMEOU
 
 /** Live pushes forwarded from the host on `pushChannel` (see broadcastPush). Returns an unsubscribe function. */
 export function subscribeCompanionPush<T>(pushChannel: string, onData: (data: T) => void): () => void {
-  const ch = getChannel();
-  function onMsg(ev: MessageEvent<RelayMessage>): void {
+  function onMsg(ev: MessageEvent): void {
+    if (ev.origin !== window.location.origin || ev.source !== window.opener) return;
     const msg = ev.data;
-    if (!msg || msg.kind !== 'push' || msg.channel !== pushChannel) return;
+    if (!isRelayMessage(msg) || msg.kind !== 'push' || msg.channel !== pushChannel) return;
     onData(msg.data as T);
   }
-  ch.addEventListener('message', onMsg);
-  return () => ch.removeEventListener('message', onMsg);
+  window.addEventListener('message', onMsg);
+  return () => window.removeEventListener('message', onMsg);
 }

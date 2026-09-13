@@ -45,9 +45,19 @@ purpose; see the PR/commit that did the rename for why.)
   iframe stays mounted somewhere in Element. This is a *display and remote-
   control* surface, not a second copy of the widget: the popup has no
   Widget API connection of its own (no `widgetId`/`parentUrl` to hand-shake
-  with), so it talks to the real widget over a same-origin
-  `BroadcastChannel` relay (`src/companion/relay.ts`) instead — every
-  Sync/refresh click in the popup runs on the original widget (reusing the
+  with), so it talks to the real widget over `window.postMessage()`
+  (`src/companion/relay.ts`), using the live `window.opener` reference
+  `window.open()` leaves behind — NOT `BroadcastChannel`, despite that being
+  the more obvious choice (and what this was originally built with): verified
+  live that a `BroadcastChannel` of the same name does NOT bridge the widget
+  iframe and the popup once Element itself is hosted on a different site than
+  the widget (confirmed working when Element and the widget shared a site;
+  confirmed broken via app.element.io) — Chrome partitions `BroadcastChannel`
+  by top-level site, not just origin, so a third-party iframe and an
+  unpartitioned top-level tab land in different partitions even at the exact
+  same origin. Direct `postMessage` between the popup and its opener isn't
+  mediated by any shared storage, so it isn't subject to that partitioning.
+  Every Sync/refresh click in the popup runs on the original widget (reusing the
   same `src/agent/sync.ts` used by Home's own buttons, including its
   already-warmed local model, rather than loading a second copy in the new
   tab), and the popup just mirrors whatever the widget's summaries/settings

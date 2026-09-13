@@ -1,9 +1,18 @@
+import { registerCompanionWindow } from './relay';
+
 /**
  * Opens (or focuses, if already open) the companion window — see
- * relay.ts's file comment for the whole "why not Document PiP" story.
- * window.open() with a fixed target name ('huddle-companion') reuses the
- * same browser window/tab across repeated clicks instead of piling up
- * duplicates.
+ * relay.ts's file comment for the whole "why not Document PiP, why not
+ * BroadcastChannel either" story. window.open() with a fixed target name
+ * ('huddle-companion') reuses the same browser window/tab across repeated
+ * clicks instead of piling up duplicates; its return value is registered
+ * with the relay so the host can push unprompted updates to it (see
+ * registerCompanionWindow's own doc comment for why that's needed — it's
+ * not just for opening the window, it's the host's only handle back to it).
+ *
+ * Deliberately no `noopener` in the features string — the whole relay
+ * depends on the popup's `window.opener` staying set (see relay.ts's call()),
+ * so this must never be added here.
  *
  * Sizing/centering copied from CrewBoard's Layout.jsx fix (2026-08-04):
  * window.open() with no left/top in its features string leaves placement
@@ -30,5 +39,9 @@ export function openCompanionWindow(): void {
   const left = Math.round(availLeft + (availWidth - width) / 2);
   const top = Math.round(availTop + (availHeight - height) / 2);
 
-  window.open(url.toString(), 'huddle-companion', `width=${width},height=${height},left=${left},top=${top}`);
+  const win = window.open(url.toString(), 'huddle-companion', `width=${width},height=${height},left=${left},top=${top}`);
+  // null when the browser's popup blocker refused it — nothing more to do
+  // here; the button click itself is a genuine user gesture, so this would
+  // only happen from an unusual popup-blocking configuration.
+  registerCompanionWindow(win);
 }
