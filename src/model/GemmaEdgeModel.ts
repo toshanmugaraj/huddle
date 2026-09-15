@@ -113,8 +113,16 @@ export const GEMMA_MODEL_OPTIONS: { id: GemmaModelId; label: string; note: strin
  * (including the `send_message` approval interrupt in tools.ts), so
  * layering AutoToolChat's *own* loop underneath would just be two loops
  * fighting over the same job. `options.toolChoice` (force a specific tool)
- * has no equivalent in this runtime version and is silently ignored — the
- * model always decides for itself.
+ * has no equivalent in this runtime version — there's no decoder-level
+ * enforcement, the model still always decides for itself — but `stream()`
+ * does still act on it best-effort: when `toolChoice` names a specific
+ * tool, an explicit directive naming it gets appended as an extra trailing
+ * message on that call (see the comment at its one use site, in `stream()`
+ * itself) rather than being silently dropped outright. This exists
+ * specifically because Strands' `structuredOutputSchema` forcing pass
+ * would otherwise be a byte-for-byte identical retry of the request that
+ * already failed — see summarize.ts's own fallback for what happens if
+ * even this isn't enough.
  *
  * IMPORTANT for whoever bumps this dependency: `@litert-lm/core@0.16.0` (npm
  * `latest` as of this writing) is a broken publish — its tarball contains
@@ -198,6 +206,13 @@ export class GemmaEdgeModel extends Model<GemmaModelConfig> {
   async *stream(messages: Message[], options?: StreamOptions): AsyncIterable<ModelStreamEvent> {
     const engine = await this.getEngine();
 
+    // Computed once, used both for `enableConstrainedDecoding` below and
+    // for the directive-injection check further down (see that comment for
+    // the full story on why either exists at all) — both only ever apply
+    // on Strands' structured-output forced-tool-call retry pass, never on
+    // ordinary Chat-tab tool use (which never sets `toolChoice` at all).
+    const forcingToolCall = !!(options?.toolChoice && 'tool' in options.toolChoice);
+
     // Tool-use ids are minted by *us* (the runtime's tool_calls don't always
     // carry one — see toolCallFromLm below) when we first emit a call, so
     // this map is self-referential: it only ever needs to resolve ids this
@@ -241,6 +256,23 @@ export class GemmaEdgeModel extends Model<GemmaModelConfig> {
         this.config.temperature !== undefined
           ? { samplerParams: { temperature: this.config.temperature } }
           : undefined,
+      // Experimental, unverified: an undocumented flag (no JSDoc, no README
+      // mention in @litert-lm/core) wired through to the wasm binding
+      // (`ConversationConfig.createCustom`'s own `enableConstrainedDecoding`
+      // param). Its name plausibly maps to exactly the failure mode the
+      // forced-tool-call retry can hit: a real, user-reported example had
+      // Gemma generate a tool call with a mismatched closing bracket,
+      // rejected outright by LiteRT-LM's own function-calling parser
+      // ("Failed to parse FC tool calls: ..."). If this flag does what its
+      // name suggests — constrain the decoder to only emit tokens that
+      // keep the output grammatically valid — it should prevent that class
+      // of failure at the source rather than just recovering from it after
+      // the fact (see summarize.ts's own fallback for the recovery side).
+      // Scoped to exactly the forced-tool-call case to keep the blast
+      // radius of an unverified flag minimal — never applied to ordinary
+      // Chat-tab tool use or plain generation. A one-line revert if live
+      // testing shows no difference.
+      ...(forcingToolCall && { enableConstrainedDecoding: true }),
     });
 
     try {
@@ -248,6 +280,45 @@ export class GemmaEdgeModel extends Model<GemmaModelConfig> {
 
       const lastMessage: LmMessage | string =
         messages.length > 0 ? toLmMessage(messages[messages.length - 1], toolUseIdToName) : '';
+
+      // Strands' structured-output forcing (Agent's structuredOutputSchema
+      // option) sets `options.toolChoice = { tool: { name } }` on exactly
+      // one retry pass, after the model responded with no tool call at
+      // all on the pass before it — but gives this wrapper nothing else
+      // to distinguish that retry from the failed attempt: same
+      // `messages`, same `toolSpecs` (the SDK deliberately drops the
+      // failed first attempt rather than appending it to history, so it's
+      // not even visible here). And this runtime has no native "must call
+      // this tool" flag to lean on either — checked SessionConfig and
+      // ConversationConfig (`@litert-lm/core`'s own types) directly;
+      // there's nothing resembling Gemini's `GoogleModel` adapter's
+      // `toolConfig.functionCallingConfig.allowedFunctionNames`. Left
+      // alone, the forced retry is a byte-for-byte identical request, so
+      // an indifferent model has no reason to answer differently — which
+      // is exactly what surfaced as `StructuredOutputError` ("The model
+      // failed to invoke the structured output tool even after it was
+      // forced") reliably, not intermittently, in local mode.
+      //
+      // The only lever available at this layer: make the two requests
+      // genuinely different. Appending an explicit directive as a SECOND
+      // message in the same sendMessageStreaming() call — not folded into
+      // the preface — puts it as the literal last thing the model sees
+      // immediately before it has to generate, the strongest positional
+      // signal available for a small on-device model. This can't
+      // *guarantee* compliance (still no decoder-level enforcement behind
+      // it, unlike Gemini's server-side forcing), but it's a real signal
+      // where today there was none — see summarize.ts's own fallback for
+      // what happens if it still isn't enough.
+      const messageToSend: LmMessage | string | LmMessage[] =
+        forcingToolCall && options?.toolChoice && 'tool' in options.toolChoice
+          ? [
+              typeof lastMessage === 'string' ? { role: 'user' as const, content: lastMessage } : lastMessage,
+              {
+                role: 'user' as const,
+                content: `You must now call the "${options.toolChoice.tool.name}" tool with your complete answer as its arguments — do not reply with plain text.`,
+              },
+            ]
+          : lastMessage;
 
       let textBlockOpen = false;
       let hasToolCalls = false;
@@ -263,7 +334,7 @@ export class GemmaEdgeModel extends Model<GemmaModelConfig> {
       // "_ of c.sendMessageStreaming is not a function"). getReader() is
       // part of the actual Streams spec both engines implement, so this
       // works identically in Chrome.
-      const reader = conversation.sendMessageStreaming(lastMessage).getReader();
+      const reader = conversation.sendMessageStreaming(messageToSend).getReader();
       try {
         while (true) {
           const { done, value: chunk } = await reader.read();

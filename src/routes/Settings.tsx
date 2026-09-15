@@ -20,6 +20,7 @@ import { useWidgetApi } from '@matrix-widget-toolkit/react';
 import {
   loadSettings,
   saveSettings,
+  LANGUAGE_OPTIONS,
   type HuddleSettings,
   type SummarizationMode,
 } from '../matrix/settingsSync';
@@ -320,6 +321,29 @@ export function Settings() {
             )}
           </>
         )}
+      </Box>
+
+      <Box>
+        <Typography variant="subtitle1" gutterBottom>
+          Language
+        </Typography>
+        <Typography variant="body2" color="text.secondary" gutterBottom>
+          Summaries (and, on request, the "Translate" button in a topic's source-message dialog)
+          are written in this language, translating from the messages' own language if needed.
+          Leave on Auto to summarize in whatever language the messages are already in.
+        </Typography>
+        <Select
+          size="small"
+          fullWidth
+          value={settings.language}
+          onChange={(e) => patch({ language: e.target.value })}
+        >
+          {LANGUAGE_OPTIONS.map((opt) => (
+            <MenuItem key={opt.value} value={opt.value}>
+              {opt.label}
+            </MenuItem>
+          ))}
+        </Select>
       </Box>
 
       <Box>

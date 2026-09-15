@@ -2,7 +2,7 @@ import { tool, InterruptResponseContent, type Interrupt } from '@strands-agents/
 import { z } from 'zod';
 import type { WidgetApi } from '@matrix-widget-toolkit/api';
 import { getRecentMessages } from '../matrix/messages';
-import { getRoomName } from '../matrix/rooms';
+import { getRoomName, navigateElementTo } from '../matrix/rooms';
 import { loadSettings } from '../matrix/settingsSync';
 import type { SelectedRoom } from '../state/chatStore';
 
@@ -12,29 +12,14 @@ import type { SelectedRoom } from '../state/chatStore';
  * trace.ts's raw toolUse.input/result JSON dump. This logs regardless of
  * whether a hook is attached to the calling Agent, so it's the one to
  * check if trace.ts's BeforeToolCallEvent/AfterToolCallEvent logging isn't
- * showing anything — most likely because the agent in question has no
- * tools at all (summarize.ts's summarizer doesn't; only chatAgent.ts does).
+ * showing anything — most likely because the agent in question has none of
+ * THIS file's tools attached at all (summarize.ts's summarizer doesn't;
+ * only chatAgent.ts does — summarize.ts's Agent does carry Strands' own
+ * internal structured-output tool via structuredOutputSchema, but that's
+ * unrelated to anything defined here).
  */
 function logTool(name: string, ...args: unknown[]) {
   console.log(`[huddle:tool:${name}]`, ...args);
-}
-
-/**
- * A matrix.to permalink send, factored out so navigate_to_room and
- * set_selected_room's own pinned-follow (below) can't drift apart on the
- * encoding subtlety documented at the call site.
- */
-async function navigateElementTo(widgetApi: WidgetApi, roomId: string): Promise<void> {
-  // NOT encodeURIComponent(roomId): a matrix.to permalink's fragment takes
-  // the room ID literally ("!abc123:example.com"), unencoded.
-  // matrix-widget-api only checks the URI starts with "https://matrix.to/#"
-  // (it does either way, so this never errors), then hands the string
-  // straight to Element's own permalink parser — which expects the raw ":"
-  // and doesn't decode "%3A" back out of it, so an encoded roomId silently
-  // resolves to nothing instead of throwing. Room IDs only ever contain
-  // fragment-safe characters anyway (opaque ID + a hostname), so there's
-  // nothing to escape.
-  await widgetApi.navigateTo(`https://matrix.to/#/${roomId}`);
 }
 
 /**
