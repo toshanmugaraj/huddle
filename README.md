@@ -39,6 +39,70 @@ purpose; see the PR/commit that did the rename for why.)
   Gemma model in-browser via Google's LiteRT-LM Web runtime
   (`@litert-lm/core`, WebGPU). Summaries live in an in-memory store
   (`src/state/summaryStore.ts`) — a reload clears them, by design.
+- **Structured summaries with topic citations**: `src/agent/summarize.ts`
+  gets its whole output shape from a Zod `structuredOutputSchema` (Strands
+  converts it to a forced tool call) rather than asking for a particular
+  Markdown/prose format — each topic is a real `{ title, points,
+  messageIndices }` object, resolved (`src/agent/sync.ts`'s `resolveTopics`)
+  against the transcript's `[N]`-tagged messages into real Matrix event IDs.
+  Clicking a topic's 💬 chip opens a dialog
+  (`src/routes/TopicMessagesDialog.tsx`) showing those exact source messages
+  as bubbles. No HTML/Markdown parsing or `dangerouslySetInnerHTML` is
+  involved on the summary side at all any more — topics render as plain
+  `Typography` text straight from the validated schema.
+  **Known asymmetry**: Strands' structured-output mechanism only *reliably*
+  works against Gemini — `GoogleModel` honors the forced `toolChoice` it
+  uses on a second pass (real server-side forcing: `toolConfig.
+  functionCallingConfig = { mode: 'ANY', allowedFunctionNames: [...] }`).
+  `GemmaEdgeModel` has no native equivalent (LiteRT-LM's JS runtime exposes
+  no per-tool forcing at all — checked directly), so per Strands' own
+  source, its forced second pass would otherwise be a byte-for-byte
+  identical retry of the request that already failed, reliably throwing
+  `StructuredOutputError`. `GemmaEdgeModel.stream()` compensates
+  best-effort: when `toolChoice` forces a specific tool, it appends an
+  explicit directive naming it as a second trailing message on that one
+  call (see its own doc comment) — a real signal where there was none
+  before, though still no decoder-level guarantee. If local mode still
+  can't get a valid call out of the model even with that nudge,
+  `summarizeRoom` (`src/agent/summarize.ts`) catches **any** error from
+  that call — not just `StructuredOutputError` — and falls back to one
+  plain, schema-free `invoke()`, surfacing the result as
+  a single uncited topic rather than failing that room's Sync outright,
+  the same "no citation → plain text, no chip" rendering the card already
+  has for a topic the model simply couldn't attribute to specific
+  messages. Deliberately unconditional: a live-tested local-mode failure
+  turned out to have a *second* shape beyond "didn't call the tool" —
+  Gemma calling it but generating output its own function-calling grammar
+  then rejects as malformed (a mismatched closing bracket, in one real
+  case), which LiteRT-LM surfaces as a plain `Error` from deep inside
+  `@litert-lm/core`, not a `StructuredOutputError` — so catching only that
+  one exception type left this exact case unhandled. `GemmaEdgeModel.ts`
+  also tries `enableConstrainedDecoding: true` (an undocumented LiteRT-LM
+  flag, scoped to exactly the forced-tool-call pass) as an experimental,
+  unverified mitigation aimed at that same malformed-output failure mode.
+  Sender display names/avatars for the dialog (`src/matrix/rooms.ts`'s
+  `getSenderInfo`) are resolved once per synced room and cached
+  (`src/state/senderInfoStore.ts`), the same "resolve as soon as known,
+  shared cache" pattern room names already use.
+- **Language** (Settings): one setting drives both the summary and the
+  citation dialog. Defaults to "Auto" (write in whatever language the
+  messages are already in — today's original behavior, unchanged). Any
+  other choice (from `settingsSync.ts`'s curated `LANGUAGE_OPTIONS` — a
+  fixed list, not free text, since it's interpolated straight into a
+  model prompt with no validation) appends an instruction
+  (`summarize.ts`'s `languageInstruction`) asking the model to write every
+  topic's title/points in that language, translating rather than leaving
+  anything in the messages' original language. The citation dialog's
+  message previews are a separate concern — they're real quoted room
+  messages the summarization call never touches — so translating them is
+  its own on-request "Translate" button (`src/agent/translate.ts`), not
+  automatic on opening the dialog: it's a genuinely new model call, and
+  for local mode that's real unprompted latency to impose on every chip
+  click if it fired automatically. Deliberately plain text in/out, no
+  `structuredOutputSchema` — a translation task doesn't need JSON, and
+  after everything above about `GemmaEdgeModel` and structured output,
+  not worth that risk just to reuse the same machinery. Shows the
+  translation alongside the original, never replacing it.
 - **Companion window** (🗗 in the header): pops Home's summary cards out
   into a real, separate browser window — pinning the widget first if it
   isn't already, since the popup only works while the original widget
@@ -66,7 +130,16 @@ purpose; see the PR/commit that did the rename for why.)
   doesn't unlock more room history, just a more comfortable place to browse
   what's already there. (Document Picture-in-Picture was tried first and
   ruled out — Chromium unconditionally rejects `requestWindow()` from any
-  iframe, regardless of Permissions-Policy.)
+  iframe, regardless of Permissions-Policy.) Its "Open" button (see below)
+  and `TopicMessagesDialog`'s "Translate" button both route through the
+  relay too (`relay.ts`'s `navigateTo` RPC; `useSettingsStore` mirrored
+  into this window's own store on snapshot/push, alongside
+  `useSenderInfoStore`) — each window/tab has its own realm-local zustand
+  store, so a value only ever set via `setSettings`/local `useState` (as
+  this component's own `settings` used to be, on its own) never reaches
+  components like `TopicMessagesDialog` that read `useSettingsStore`
+  directly; the fix mirrors it into that store too, the same pattern
+  `senderInfo` already used.
 
 ## Architecture
 
@@ -210,11 +283,19 @@ pulled back out for now; may come back if/when it's actually needed.)
   paginated back that far locally (Element's own `TimelinePanel` only loads
   30 events on room open, extending as a human scrolls). `getMessagesSince`
   (`src/matrix/messages.ts`) surfaces this as `complete`/`availableDaysBack`
-  on its result, and each summary card shows a warning + the real number of
-  days actually available locally when the requested window isn't fully
-  backed by data — but there's no way to force Element to load more from
-  inside the widget sandbox; the workaround is opening the room in Element
-  and scrolling back further yourself, then refreshing that card.
+  on its result; every synced card shows a coverage bar (`Home.tsx`'s
+  `CoverageScale`, shown regardless of whether that room is actually
+  incomplete — a full bar is itself useful confirmation) spanning the
+  requested window, oldest requested day on the left to today on the
+  right, filled green for however much of it is actually backed by
+  locally-loaded data — but there's no way to force Element to load more
+  from inside the widget sandbox. Each card has an **"Open"** button
+  (bottom-right, calls the same `navigateElementTo` the Chat tab's
+  `navigate_to_room` tool uses) as a one-click version of the workaround:
+  it jumps the user's real Element client to that room so they can
+  manually scroll back further there (loading more into Element's live
+  timeline, which the next refresh will then see), rather than having to
+  find the room themselves.
 - **Model-load progress** is an indeterminate spinner, not a real byte
   progress bar — `Engine.create()` doesn't expose one directly for either
   model source (bundled URL or uploaded `Blob`); a real bar means fetching

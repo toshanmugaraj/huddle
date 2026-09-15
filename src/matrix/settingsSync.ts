@@ -25,7 +25,47 @@ export interface HuddleSettings {
    * into.
    */
   historyDaysBack: number;
+  /**
+   * Target language for both the summary (title/points — see
+   * agent/summarize.ts's languageInstruction) and, on request, the
+   * citation dialog's translated message previews (agent/translate.ts) —
+   * one language setting drives both, so there's no separate "translate
+   * to X" picker duplicating this. Empty string ('') is "Auto": write in
+   * whatever language the messages are already in, no translation
+   * requested anywhere, today's original behavior. A non-empty value is
+   * one of LANGUAGE_OPTIONS' `value`s — a plain language name (e.g.
+   * "Spanish"), not an ISO code, since it's only ever interpolated into a
+   * natural-language instruction for the model, never compared/parsed
+   * programmatically.
+   */
+  language: string;
 }
+
+/**
+ * Deliberately a short, curated list rather than free text — an unusual or
+ * ambiguous string here goes straight into a model prompt with no
+ * validation, and a fixed list keeps that input predictable. `value: ''`
+ * is the "Auto" default; every other value is the literal language name
+ * interpolated into agent/summarize.ts's languageInstruction and
+ * agent/translate.ts's translation prompt.
+ */
+export const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: 'Auto (same language as the messages)' },
+  { value: 'English', label: 'English' },
+  { value: 'Spanish', label: 'Spanish' },
+  { value: 'French', label: 'French' },
+  { value: 'German', label: 'German' },
+  { value: 'Portuguese', label: 'Portuguese' },
+  { value: 'Italian', label: 'Italian' },
+  { value: 'Dutch', label: 'Dutch' },
+  { value: 'Japanese', label: 'Japanese' },
+  { value: 'Korean', label: 'Korean' },
+  { value: 'Chinese (Simplified)', label: 'Chinese (Simplified)' },
+  { value: 'Hindi', label: 'Hindi' },
+  { value: 'Tamil', label: 'Tamil' },
+  { value: 'Arabic', label: 'Arabic' },
+  { value: 'Russian', label: 'Russian' },
+];
 
 // The Gemini API key is deliberately NOT part of this interface — it lives
 // in localStorage only (src/state/apiKeyStore.ts), never in this state
@@ -41,27 +81,25 @@ export const DEFAULT_SETTINGS: HuddleSettings = {
   localModel: 'gemma-4-e2b',
   geminiModel: 'gemini-3.6-flash',
   historyDaysBack: 0,
-  // Asking for Markdown, not HTML: every model tried — Gemini included, and
-  // especially the on-device Gemma — reliably ignores an "output raw HTML
-  // tags" instruction and writes Markdown anyway, presumably because
-  // that's what training data biases it toward regardless of the prompt.
-  // sanitizeSummaryHtml.ts now runs the response through a real Markdown
-  // parser before sanitizing, so asking for the format models actually
-  // produce is both simpler to write and more reliable than fighting that
-  // bias — see that file's comment for the fuller story.
+  language: '',
+  // No format instructions here at all any more (no "- Date: " / "- Topic:
+  // summary" Markdown convention) — summarizeRoom (agent/summarize.ts) gets
+  // its output shape from a Zod structuredOutputSchema now, not from asking
+  // nicely in prose. That sidesteps, rather than fights, the exact
+  // instruction-following problem that motivated the old Markdown
+  // convention in the first place: every model tried — Gemini included, and
+  // especially the on-device Gemma — reliably ignored format instructions
+  // given as prose. A schema-validated tool call doesn't have that failure
+  // mode the same way (see summarize.ts's own comment on the one real
+  // remaining gap: GemmaEdgeModel can't be FORCED to call it, so a
+  // sufficiently uncooperative local-mode response still surfaces as a
+  // failed Sync rather than a malformed one).
   instruction:
-    // "the given messages", not "today's messages" — the Home tab's history
-    // slider (historyDaysBack above) can hand this a multi-day range, and
-    // the per-request "Date: .../Messages from ...:" header (see
-    // summarize.ts) already tells the model exactly what span it's looking
-    // at, so this default shouldn't bake in an assumption of exactly one day.
     'You are an expert technical documentation assistant summarizing the given messages in this ' +
-    'room. Ignore off-topic banter, jokes, or ambient greetings. Group related discussion into ' +
-    'clear, thematic bullet points rather than a chronological recap. Call out any direct ' +
-    'questions or action items addressed to me. Format the response as simple Markdown: start ' +
-    'with "- Date: " followed by the exact "Date" given above (never guess a date yourself), ' +
-    'then one "- Topic: summary" bullet per topic, with a blank line between each bullet for ' +
-    'extra spacing. Bold for emphasis, no headings, no links, no code blocks.',
+    'room. Ignore off-topic banter, jokes, or ambient greetings — don\'t create a topic for them. ' +
+    'Group related discussion into clear, distinct topics rather than a chronological recap. Call ' +
+    'out any direct questions or action items addressed to me as their own topic. Write each point ' +
+    'as a plain sentence — no Markdown formatting, no bold, no headings, no links, no code blocks.',
 };
 
 // Settings are stored as a state event in the widget's own room, keyed by

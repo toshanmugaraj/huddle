@@ -1,10 +1,20 @@
 import { useEffect, useState } from 'react';
 import { Alert, Box, Button, Stack, Typography } from '@mui/material';
 import { daysTickLabel, SummaryCard } from '../routes/Home';
-import { connectCompanion, companionGetSnapshot, companionSyncAll, companionSyncRoom, subscribeCompanionPush } from './relay';
+import {
+  connectCompanion,
+  companionGetSnapshot,
+  companionSyncAll,
+  companionSyncRoom,
+  companionNavigateTo,
+  subscribeCompanionPush,
+} from './relay';
 import type { CompanionSnapshot } from './hostBootstrap';
 import type { HuddleSettings } from '../matrix/settingsSync';
 import type { RoomSummary } from '../state/summaryStore';
+import { useSenderInfoStore } from '../state/senderInfoStore';
+import { useSettingsStore } from '../state/settingsStore';
+import type { SenderInfo } from '../matrix/rooms';
 
 type ConnectionState = 'connecting' | 'connected' | 'error';
 
@@ -14,7 +24,7 @@ type ConnectionState = 'connecting' | 'connected' | 'error';
  * main.tsx instead of the normal widget tree when `?companion=1` is in the
  * URL — NOT a Matrix Widget itself (no widgetId/parentUrl, no
  * WidgetApiImpl.create() call), just a plain page that talks to the real
- * widget (still open somewhere in Element) over relay.ts's BroadcastChannel
+ * widget (still open somewhere in Element) over relay.ts's window.postMessage
  * bridge.
  *
  * Deliberately thin: this never reads room data or runs a summarization
@@ -50,6 +60,23 @@ export function CompanionApp() {
         setSettings(snapshot.settings);
         setRoomNames(snapshot.roomNames);
         setSummaries(snapshot.summaries);
+        // Not React state — SummaryCard reads senderInfo directly from this
+        // window's own useSenderInfoStore instance (via useResolveSenderInfo,
+        // called with no widgetApi here — see that hook's own doc comment on
+        // why that's enough), rather than through a prop like roomNames/
+        // summaries above. Both approaches work; this one matches how
+        // roomNameStore.ts/useResolveRoomNames.ts already do "shared cache,
+        // not prop-threaded" resolution on the Home-tab side.
+        useSenderInfoStore.setState({ info: snapshot.senderInfo });
+        // Also mirrored into this realm's own useSettingsStore (in addition
+        // to the local `settings` state this component renders from above)
+        // — TopicMessagesDialog reads settings.language straight from that
+        // store rather than as a prop (it's shared with Home.tsx, which has
+        // a real widgetApi-backed store to read there), so without this the
+        // Translate button never appeared in this window: the store here
+        // was never written to, so it sat at DEFAULT_SETTINGS forever
+        // (language: '', read as "Auto", the button's hidden state).
+        useSettingsStore.setState({ settings: snapshot.settings, loaded: true });
         setConnection('connected');
       })
       .catch((err: unknown) => {
@@ -62,9 +89,17 @@ export function CompanionApp() {
     // host side (its own Sync, or this window's own syncRoom/syncAll calls
     // below) — see hostBootstrap.ts's store subscriptions.
     const unsubscribers = [
-      subscribeCompanionPush<HuddleSettings>('settings', (data) => !cancelled && setSettings(data)),
+      subscribeCompanionPush<HuddleSettings>('settings', (data) => {
+        if (cancelled) return;
+        setSettings(data);
+        useSettingsStore.setState({ settings: data, loaded: true });
+      }),
       subscribeCompanionPush<Record<string, string>>('roomNames', (data) => !cancelled && setRoomNames(data)),
       subscribeCompanionPush<Record<string, RoomSummary>>('summaries', (data) => !cancelled && setSummaries(data)),
+      subscribeCompanionPush<Record<string, SenderInfo>>(
+        'senderInfo',
+        (data) => !cancelled && useSenderInfoStore.setState({ info: data }),
+      ),
     ];
 
     return () => {
@@ -102,6 +137,19 @@ export function CompanionApp() {
     } finally {
       setRefreshingRoomId(undefined);
     }
+  };
+
+  // Same "open in Element" escape hatch as Home.tsx's own button, routed
+  // through the relay (companionNavigateTo) since this window has no
+  // Widget API of its own to call navigateTo with directly — see
+  // relay.ts's HostHandlers.navigateTo doc comment. Reuses actionError
+  // rather than a dedicated state: same "something went wrong with an
+  // action in this window" scope as the sync errors above.
+  const handleOpenInElement = (roomId: string) => {
+    setActionError(undefined);
+    companionNavigateTo(roomId).catch((err: unknown) => {
+      setActionError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   if (connection === 'connecting') {
@@ -162,6 +210,7 @@ export function CompanionApp() {
             onRefresh={handleRefreshRoom}
             refreshDisabled={syncingAll || !!refreshingRoomId}
             refreshing={refreshingRoomId === roomId}
+            onOpenInElement={handleOpenInElement}
           />
         ))}
       </Stack>

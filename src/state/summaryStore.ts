@@ -1,11 +1,33 @@
 import { create } from 'zustand';
+import type { RoomMessage } from '../matrix/messages';
+
+/**
+ * One topic from a room's summary, as actually stored/displayed — resolved
+ * from agent/summarize.ts's schema-validated SummaryTopic (whose
+ * messageIndices are 1-based positions into that one sync's transcript,
+ * meaningless outside it) into real Matrix eventIds by agent/sync.ts's
+ * resolveTopics, against `sourceMessages` below.
+ */
+export interface RoomSummaryTopic {
+  title: string;
+  points: string[];
+  /** Matrix event IDs this topic cites, in the order the model listed them. Empty when the model couldn't attribute this topic to specific messages — SummaryCard renders it without the "view messages" affordance in that case; there's no heuristic fallback. */
+  messageIds: string[];
+}
 
 export type SummaryStatus = 'idle' | 'summarizing' | 'done' | 'no-messages' | 'error';
 
 export interface RoomSummary {
   roomId: string;
   roomName: string;
-  summary: string;
+  topics: RoomSummaryTopic[];
+  /**
+   * The exact messages `topics` were generated from — kept (in-memory only,
+   * same as everything else in this store) so a topic's `messageIds` can be
+   * resolved into real sender/body/timestamp for the "view source messages"
+   * dialog, without a second, possibly-drifted fetch at view time.
+   */
+  sourceMessages: RoomMessage[];
   messageCount: number;
   /**
    * Same meaning as HuddleSettings.historyDaysBack, snapshotted at sync

@@ -1,9 +1,10 @@
 import type { WidgetApi } from '@matrix-widget-toolkit/api';
-import { getRoomName } from '../matrix/rooms';
-import { getMessagesSince } from '../matrix/messages';
-import { summarizeRoom, prepareModel } from './summarize';
+import { getRoomName, getSenderInfo, type SenderInfo } from '../matrix/rooms';
+import { getMessagesSince, type RoomMessage } from '../matrix/messages';
+import { summarizeRoom, prepareModel, type SummaryTopic } from './summarize';
+import { senderInfoKey } from '../state/senderInfoStore';
 import type { HuddleSettings } from '../matrix/settingsSync';
-import type { RoomSummary } from '../state/summaryStore';
+import type { RoomSummary, RoomSummaryTopic } from '../state/summaryStore';
 import type { GemmaModelId } from '../model/GemmaEdgeModel';
 import type { ModelStatus } from '../state/modelStore';
 
@@ -17,10 +18,20 @@ import type { ModelStatus } from '../state/modelStore';
  */
 export interface SyncContext {
   widgetApi: WidgetApi;
-  settings: Pick<HuddleSettings, 'mode' | 'localModel' | 'geminiModel' | 'instruction' | 'historyDaysBack'>;
+  settings: Pick<HuddleSettings, 'mode' | 'localModel' | 'geminiModel' | 'instruction' | 'historyDaysBack' | 'language'>;
   geminiApiKey: string;
   setSummary: (roomId: string, patch: Partial<RoomSummary>) => void;
   setModelStatus: (modelId: GemmaModelId, status: ModelStatus) => void;
+  /**
+   * senderInfoStore's getState().info/setInfo, passed through the same way
+   * setSummary/setModelStatus already are — this is the one place
+   * guaranteed to have a real widgetApi (the companion window doesn't), so
+   * it's where every distinct message sender gets resolved+cached, letting
+   * the companion pick the result up "for free" via hostBootstrap.ts's
+   * existing store-push plumbing instead of needing a widgetApi of its own.
+   */
+  getCachedSenderInfo: (key: string) => SenderInfo | undefined;
+  setSenderInfo: (key: string, info: SenderInfo) => void;
 }
 
 /**
@@ -33,7 +44,7 @@ export interface SyncContext {
  * abort a run that covers other rooms too.
  */
 export async function syncRoom(ctx: SyncContext, roomId: string): Promise<void> {
-  const { widgetApi, settings, geminiApiKey, setSummary } = ctx;
+  const { widgetApi, settings, geminiApiKey, setSummary, getCachedSenderInfo, setSenderInfo } = ctx;
   setSummary(roomId, { status: 'summarizing' });
   try {
     const roomName = await getRoomName(widgetApi, roomId);
@@ -41,6 +52,22 @@ export async function syncRoom(ctx: SyncContext, roomId: string): Promise<void> 
       widgetApi,
       roomId,
       settings.historyDaysBack,
+    );
+
+    // Eager, not on-demand: this is the one place guaranteed to have a real
+    // widgetApi (see SyncContext's own doc comment on getCachedSenderInfo/
+    // setSenderInfo) — resolving here means the companion window's "view
+    // messages" dialog already has display names/avatars by the time it
+    // needs them, with no widgetApi of its own to fetch them with. Deduped
+    // against the cache so re-syncing a room doesn't re-fetch every sender
+    // every time.
+    const distinctSenders = [...new Set(messages.map((m) => m.sender))];
+    await Promise.all(
+      distinctSenders.map(async (sender) => {
+        const key = senderInfoKey(roomId, sender);
+        if (getCachedSenderInfo(key)) return;
+        setSenderInfo(key, await getSenderInfo(widgetApi, roomId, sender));
+      }),
     );
 
     if (messages.length === 0) {
@@ -55,10 +82,11 @@ export async function syncRoom(ctx: SyncContext, roomId: string): Promise<void> 
       return;
     }
 
-    const summary = await summarizeRoom(roomName, messages, settings, geminiApiKey, settings.historyDaysBack);
+    const topics = await summarizeRoom(roomName, messages, settings, geminiApiKey, settings.historyDaysBack);
     setSummary(roomId, {
       roomName,
-      summary,
+      topics: resolveTopics(topics, messages),
+      sourceMessages: messages,
       messageCount: messages.length,
       daysBack: settings.historyDaysBack,
       complete,
@@ -72,6 +100,28 @@ export async function syncRoom(ctx: SyncContext, roomId: string): Promise<void> 
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+/**
+ * summarizeRoom's SummaryTopic.messageIndices are 1-based positions into the
+ * `messages` transcript it was given (see summarize.ts's buildTranscript) —
+ * meaningless outside that one call. This resolves them into the real
+ * eventIds the rest of the app (TopicMessagesDialog, in particular) actually
+ * needs, dropping anything out of range defensively: the Zod schema only
+ * validates that each entry is an integer, not that it's actually a valid
+ * index, and message bodies (which the model sees as part of the same
+ * prompt) are attacker-influenceable text — an out-of-range or hallucinated
+ * index should never throw, just silently not resolve to a message.
+ */
+function resolveTopics(topics: SummaryTopic[], sourceMessages: RoomMessage[]): RoomSummaryTopic[] {
+  return topics.map((topic) => ({
+    title: topic.title,
+    points: topic.points,
+    messageIds: topic.messageIndices
+      .map((n) => n - 1)
+      .filter((i) => Number.isInteger(i) && i >= 0 && i < sourceMessages.length)
+      .map((i) => sourceMessages[i].eventId),
+  }));
 }
 
 /**

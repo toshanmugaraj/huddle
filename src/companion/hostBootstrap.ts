@@ -3,15 +3,18 @@ import { useSettingsStore } from '../state/settingsStore';
 import { useApiKeyStore } from '../state/apiKeyStore';
 import { useSummaryStore } from '../state/summaryStore';
 import { useRoomNameStore } from '../state/roomNameStore';
+import { useSenderInfoStore } from '../state/senderInfoStore';
 import { useModelStore } from '../state/modelStore';
 import { syncRoom, syncAllRooms, type SyncContext } from '../agent/sync';
+import { navigateElementTo } from '../matrix/rooms';
 import { startRelayHost, broadcastPush, isCompanion } from './relay';
 
-/** Shape handed to the companion window by the 'getSnapshot' RPC (see relay.ts) and mirrored by the three store pushes below — CompanionApp.tsx's initial-load type. */
+/** Shape handed to the companion window by the 'getSnapshot' RPC (see relay.ts) and mirrored by the four store pushes below — CompanionApp.tsx's initial-load type. */
 export interface CompanionSnapshot {
   settings: ReturnType<typeof useSettingsStore.getState>['settings'];
   roomNames: ReturnType<typeof useRoomNameStore.getState>['names'];
   summaries: ReturnType<typeof useSummaryStore.getState>['summaries'];
+  senderInfo: ReturnType<typeof useSenderInfoStore.getState>['info'];
 }
 
 /**
@@ -37,6 +40,8 @@ export function startCompanionHost(): void {
       geminiApiKey: useApiKeyStore.getState().apiKey,
       setSummary: useSummaryStore.getState().setSummary,
       setModelStatus: useModelStore.getState().setStatus,
+      getCachedSenderInfo: (key) => useSenderInfoStore.getState().info[key],
+      setSenderInfo: useSenderInfoStore.getState().setInfo,
     });
 
     startRelayHost({
@@ -49,16 +54,19 @@ export function startCompanionHost(): void {
         settings: useSettingsStore.getState().settings,
         roomNames: useRoomNameStore.getState().names,
         summaries: useSummaryStore.getState().summaries,
+        senderInfo: useSenderInfoStore.getState().info,
       }),
+      navigateTo: (roomId) => navigateElementTo(widgetApi, roomId),
     });
 
     // Live-forward every change from here on — a companion that's already
     // open picks these up directly; one that opens later gets caught up via
     // its own getSnapshot pull on connect (see CompanionApp.tsx), not by
-    // anything broadcast here (BroadcastChannel has no replay/history, so a
-    // push made before a companion existed is simply never seen by it).
+    // anything broadcast here (postMessage has no replay/history, so a push
+    // made before a companion existed is simply never seen by it).
     useSettingsStore.subscribe((state) => broadcastPush('settings', state.settings));
     useRoomNameStore.subscribe((state) => broadcastPush('roomNames', state.names));
     useSummaryStore.subscribe((state) => broadcastPush('summaries', state.summaries));
+    useSenderInfoStore.subscribe((state) => broadcastPush('senderInfo', state.info));
   });
 }

@@ -107,6 +107,8 @@ export interface HostHandlers {
   syncRoom(roomId: string): Promise<void>;
   syncAll(): Promise<void>;
   getSnapshot(): unknown;
+  /** Lets the companion use the "open in Element" escape hatch (Home.tsx's per-card button) even though it has no Widget API of its own — navigateTo only exists on the real widget's live connection, so the host does it on the companion's behalf. */
+  navigateTo(roomId: string): Promise<void>;
 }
 
 // ── Host side (runs inside the real widget iframe) ──────────────────────────
@@ -162,6 +164,9 @@ export function startRelayHost(handlers: HostHandlers): void {
             break;
           case 'syncAll':
             await handlers.syncAll();
+            break;
+          case 'navigateTo':
+            await handlers.navigateTo((msg.args as { roomId: string }).roomId);
             break;
           default:
             throw new Error(`Unknown relay method: ${msg.method}`);
@@ -242,6 +247,7 @@ export function connectCompanion(): Promise<void> {
 export const companionGetSnapshot = <T,>() => call('getSnapshot') as Promise<T>;
 export const companionSyncRoom = (roomId: string) => call('syncRoom', { roomId }, SYNC_RPC_TIMEOUT_MS).then(() => undefined);
 export const companionSyncAll = () => call('syncAll', undefined, SYNC_RPC_TIMEOUT_MS).then(() => undefined);
+export const companionNavigateTo = (roomId: string) => call('navigateTo', { roomId }).then(() => undefined);
 
 /** Live pushes forwarded from the host on `pushChannel` (see broadcastPush). Returns an unsubscribe function. */
 export function subscribeCompanionPush<T>(pushChannel: string, onData: (data: T) => void): () => void {

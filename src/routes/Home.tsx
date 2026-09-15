@@ -1,15 +1,20 @@
 import { useEffect, useState, type SyntheticEvent } from 'react';
 import { Alert, Box, Button, Card, CardContent, Chip, IconButton, Slider, Stack, Tooltip, Typography } from '@mui/material';
 import { useWidgetApi } from '@matrix-widget-toolkit/react';
+import type { WidgetApi } from '@matrix-widget-toolkit/api';
 import { loadSettings, saveSettings } from '../matrix/settingsSync';
 import { useResolveRoomNames } from '../matrix/useResolveRoomNames';
+import { useResolveSenderInfo } from '../matrix/useResolveSenderInfo';
+import { navigateElementTo } from '../matrix/rooms';
 import { syncRoom as syncOneRoom, syncAllRooms, type SyncContext } from '../agent/sync';
-import { prepareModel } from '../agent/summarize';
+import { prepareModel, dateRangeLabel } from '../agent/summarize';
 import { useSettingsStore } from '../state/settingsStore';
 import { useSummaryStore, type RoomSummary } from '../state/summaryStore';
 import { useModelStore } from '../state/modelStore';
 import { useApiKeyStore } from '../state/apiKeyStore';
-import { sanitizeSummaryHtml } from '../utils/sanitizeSummaryHtml';
+import { useSenderInfoStore } from '../state/senderInfoStore';
+import type { RoomMessage } from '../matrix/messages';
+import { TopicMessagesDialog } from './TopicMessagesDialog';
 
 const MAX_HISTORY_DAYS_BACK = 7;
 
@@ -43,6 +48,7 @@ export function Home() {
   const [syncing, setSyncing] = useState(false);
   const [progress, setProgress] = useState<string | undefined>();
   const [syncError, setSyncError] = useState<string | undefined>();
+  const [navigateError, setNavigateError] = useState<string | undefined>();
   // Which single room a per-card refresh (as opposed to the top-level Sync
   // across every room) is currently running for — at most one at a time,
   // same reasoning as handleSync's own comment on why it summarizes rooms
@@ -62,12 +68,23 @@ export function Home() {
 
   const roomNames = useResolveRoomNames(widgetApi, settings.roomIds);
 
+  const getCachedSenderInfo = useSenderInfoStore((s) => s.info);
+  const setSenderInfo = useSenderInfoStore((s) => s.setInfo);
+
   // Built fresh each render (cheap — just references) rather than memoized:
   // syncRoom/syncAllRooms (agent/sync.ts) take this instead of closing over
   // component state directly, so the exact same functions also work from
   // the companion-window relay host (companion/hostBootstrap.ts), which has
   // no hooks/component of its own to close over.
-  const syncCtx: SyncContext = { widgetApi, settings, geminiApiKey, setSummary, setModelStatus };
+  const syncCtx: SyncContext = {
+    widgetApi,
+    settings,
+    geminiApiKey,
+    setSummary,
+    setModelStatus,
+    getCachedSenderInfo: (key) => getCachedSenderInfo[key],
+    setSenderInfo,
+  };
 
   const handleSync = async () => {
     setSyncing(true);
@@ -106,6 +123,19 @@ export function Home() {
     } finally {
       setRefreshingRoomId(undefined);
     }
+  };
+
+  // Jumps the user's real Element client to a room — the manual-scrollback
+  // workaround CoverageScale's own tooltip already describes, now one
+  // click instead of finding the room by hand. Errors surfaced in a small
+  // banner rather than per-card: this is a widget-wide capability (same
+  // navigateElementTo every Chat-tab tool already uses), not something
+  // that fails differently per room.
+  const handleOpenInElement = (roomId: string) => {
+    setNavigateError(undefined);
+    navigateElementTo(widgetApi, roomId).catch((err: unknown) => {
+      setNavigateError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   // Live while dragging (cheap, local-only) — persisting to the Matrix
@@ -174,6 +204,7 @@ export function Home() {
       </Stack>
 
       {syncError && <Alert severity="error">{syncError}</Alert>}
+      {navigateError && <Alert severity="error">{navigateError}</Alert>}
 
       {settings.roomIds.map((roomId) => (
         <SummaryCard
@@ -188,6 +219,13 @@ export function Home() {
           // refreshingRoomId's own comment on why only one runs at a time.
           refreshDisabled={syncing || !!refreshingRoomId}
           refreshing={refreshingRoomId === roomId}
+          onOpenInElement={handleOpenInElement}
+          // Enables SummaryCard's internal useResolveSenderInfo top-up —
+          // the companion window (CompanionApp.tsx) omits this entirely,
+          // since it has no WidgetApi of its own (see that hook's doc
+          // comment) and relies solely on the host's pushed sender-info
+          // cache instead.
+          widgetApi={widgetApi}
         />
       ))}
     </Stack>
@@ -202,6 +240,8 @@ export function SummaryCard({
   onRefresh,
   refreshDisabled,
   refreshing,
+  onOpenInElement,
+  widgetApi,
 }: {
   roomId: string;
   roomName?: string;
@@ -209,107 +249,187 @@ export function SummaryCard({
   onRefresh: (roomId: string) => void;
   refreshDisabled: boolean;
   refreshing: boolean;
+  onOpenInElement: (roomId: string) => void;
+  /** Only Home.tsx passes this — see useResolveSenderInfo's own doc comment on why it's optional and what happens when it's omitted (the companion window's case). */
+  widgetApi?: WidgetApi;
 }) {
   const title = summary?.roomName ?? roomName ?? roomId;
 
+  const distinctSenders = [...new Set((summary?.sourceMessages ?? []).map((m) => m.sender))];
+  const senderInfo = useResolveSenderInfo(widgetApi, roomId, distinctSenders);
+
+  // Which topic's messages (if any) the dialog is currently open for — a
+  // resolved RoomMessage[], not just an index, since that's what
+  // TopicMessagesDialog actually needs and resolving it here (once, on
+  // click) is simpler than re-deriving it on every render the dialog stays
+  // open for.
+  const [openTopicMessages, setOpenTopicMessages] = useState<RoomMessage[]>();
+
   return (
-    <Card variant="outlined">
-      <CardContent>
-        <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
-          <Typography variant="subtitle1">{title}</Typography>
-          <Stack direction="row" spacing={0.5} alignItems="center">
-            <StatusChip status={summary?.status ?? 'idle'} />
-            <Tooltip title={refreshing ? 'Refreshing…' : `Refresh just this room (${daysSentence(summary?.daysBack ?? 0)})`}>
-              {/* span wrapper: IconButton's own disabled prop swallows the Tooltip's hover/focus listeners */}
-              <span>
-                <IconButton size="small" onClick={() => onRefresh(roomId)} disabled={refreshDisabled}>
-                  {refreshing ? '⏳' : '🔄'}
-                </IconButton>
-              </span>
-            </Tooltip>
+    <>
+      <Card variant="outlined">
+        <CardContent>
+          <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+            <Typography variant="subtitle1">{title}</Typography>
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <StatusChip status={summary?.status ?? 'idle'} />
+              <Tooltip title="Open this room in Element — scrolling back further there loads more history for the next sync (see the coverage bar below).">
+                <Button size="small" variant="text" onClick={() => onOpenInElement(roomId)}>
+                  Open
+                </Button>
+              </Tooltip>
+              <Tooltip title={refreshing ? 'Refreshing…' : `Refresh just this room (${daysSentence(summary?.daysBack ?? 0)})`}>
+                {/* span wrapper: IconButton's own disabled prop swallows the Tooltip's hover/focus listeners */}
+                <span>
+                  <IconButton size="small" onClick={() => onRefresh(roomId)} disabled={refreshDisabled}>
+                    {refreshing ? '⏳' : '🔄'}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </Stack>
           </Stack>
-        </Stack>
 
-        {summary?.status === 'done' && (
-          <>
-            {/* summary.summary is model output sanitized to a tight tag
-                allowlist by sanitizeSummaryHtml — see that file's comment
-                for why this can't just be dangerouslySetInnerHTML'd as-is.
-                '& li' margin is the reliable half of the instruction's
-                "blank line between bullets" ask — models don't consistently
-                emit the blank line that would make marked produce a loose
-                list (same unreliability sanitizeSummaryHtml.ts's own doc
-                comment already found with HTML-vs-Markdown compliance), so
-                this doesn't depend on that to actually show up. */}
-            <Box
-              sx={{
-                mt: 1,
-                '& p': { m: 0, mb: 0.5 },
-                '& ul': { mt: 0, mb: 0.5, pl: 3 },
-                '& li': { mb: 1, '&:last-child': { mb: 0 } },
-              }}
-              dangerouslySetInnerHTML={{ __html: sanitizeSummaryHtml(summary.summary) }}
-            />
-            <Typography variant="caption" color="text.secondary">
-              {summary.messageCount} message{summary.messageCount === 1 ? '' : 's'} from {daysSentence(summary.daysBack)}{' '}
-              · synced {summary.syncedAt && new Date(summary.syncedAt).toLocaleTimeString()}
-            </Typography>
-            <CoverageNote summary={summary} />
-          </>
-        )}
+          {summary?.status === 'done' && (
+            <>
+              {/* Each topic is real JSX (title + points as plain text) driven
+                  directly by the model's schema-validated structured output
+                  (agent/summarize.ts's RoomSummarySchema) — no HTML/Markdown
+                  parsing or dangerouslySetInnerHTML involved at all any more.
+                  A topic only gets the "💬 N" chip (opening
+                  TopicMessagesDialog) when it actually cited messages —
+                  there's no heuristic fallback when it didn't. */}
+              <Box component="ul" sx={{ mt: 1, mb: 0, pl: 3 }}>
+                {summary.topics.map((topic, i) => (
+                  <Box component="li" key={i} sx={{ mb: 1, '&:last-child': { mb: 0 } }}>
+                    <Typography component="span" variant="body2" sx={{ fontWeight: 600 }}>
+                      {topic.title}
+                    </Typography>
+                    {topic.messageIds.length > 0 && (
+                      <Chip
+                        size="small"
+                        label={`💬 ${topic.messageIds.length}`}
+                        sx={{ ml: 1, verticalAlign: 'middle' }}
+                        onClick={() =>
+                          setOpenTopicMessages(
+                            topic.messageIds
+                              .map((id) => summary.sourceMessages.find((m) => m.eventId === id))
+                              .filter((m): m is RoomMessage => !!m),
+                          )
+                        }
+                      />
+                    )}
+                    <Box component="ul" sx={{ mt: 0.5, mb: 0, pl: 3 }}>
+                      {topic.points.map((point, j) => (
+                        <Typography component="li" variant="body2" key={j}>
+                          {point}
+                        </Typography>
+                      ))}
+                    </Box>
+                  </Box>
+                ))}
+              </Box>
+              <CoverageScale summary={summary} />
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textAlign: 'right', mt: 0.5 }}>
+                {dateRangeLabel(summary.daysBack)} · {summary.messageCount} message{summary.messageCount === 1 ? '' : 's'}
+                {' '}· synced {summary.syncedAt && new Date(summary.syncedAt).toLocaleTimeString()}
+              </Typography>
+            </>
+          )}
 
-        {summary?.status === 'no-messages' && (
-          <>
+          {summary?.status === 'no-messages' && (
+            <>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                No messages from {daysSentence(summary.daysBack)}.
+              </Typography>
+              <CoverageScale summary={summary} />
+            </>
+          )}
+
+          {summary?.status === 'error' && (
+            <Alert severity="error" sx={{ mt: 1 }}>
+              {summary.error}
+            </Alert>
+          )}
+
+          {(!summary || summary.status === 'idle') && (
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              No messages from {daysSentence(summary.daysBack)}.
+              Not synced yet.
             </Typography>
-            <CoverageNote summary={summary} />
-          </>
-        )}
-
-        {summary?.status === 'error' && (
-          <Alert severity="error" sx={{ mt: 1 }}>
-            {summary.error}
-          </Alert>
-        )}
-
-        {(!summary || summary.status === 'idle') && (
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            Not synced yet.
-          </Typography>
-        )}
-      </CardContent>
-    </Card>
+          )}
+        </CardContent>
+      </Card>
+      {openTopicMessages && (
+        <TopicMessagesDialog
+          open
+          onClose={() => setOpenTopicMessages(undefined)}
+          roomId={roomId}
+          messages={openTopicMessages}
+          senderInfo={senderInfo}
+        />
+      )}
+    </>
   );
 }
 
 /**
- * Warns when a card's summary might not actually cover the requested
- * history window — see messages.ts's MessagesSinceResult doc comment for
- * why: the widget API can only read whatever room history Element already
- * has loaded locally, with no way to request further homeserver backfill,
- * so "no messages" or a short summary can just as easily mean "Element
- * hadn't loaded that far back" as "the room was quiet." Silent otherwise
- * (renders nothing) — a fully-covered card needs no extra caption.
+ * Visualizes how much of a card's requested history window is actually
+ * backed by locally-loaded data — see messages.ts's MessagesSinceResult
+ * doc comment for why that can fall short: the widget API can only read
+ * whatever room history Element already has loaded locally, with no way
+ * to request further homeserver backfill, so "no messages" or a short
+ * summary can just as easily mean "Element hadn't loaded that far back"
+ * as "the room was quiet." Shown on every synced card, not just
+ * incomplete ones — a full bar is itself useful confirmation, and showing
+ * it unconditionally means every room's status is visible at a glance
+ * side by side, not just whichever one happens to be short.
  *
- * `daysTickLabel`, not `daysSentence`, for the *available* side — matches
- * the compact "Today"/"N days" form the top slider itself uses, so a
- * room's real local coverage reads as directly comparable to the slider's
- * own value rather than in different prose.
+ * A single bar, oldest requested day on the left to today on the right
+ * (natural reading order), filled green from the right for however much
+ * is actually available locally. No literal dates on the bar itself — the
+ * card's own date-range/message-count/synced-time caption sits right
+ * below this (rendered by the caller, at the bottom of the card, right-
+ * aligned), so repeating those same dates here would be redundant; this
+ * bar's own caption instead gives the count ("2 of 3 days"), which that
+ * one doesn't.
  */
-function CoverageNote({ summary }: { summary: RoomSummary }) {
-  if (summary.complete) return null;
+function CoverageScale({ summary }: { summary: RoomSummary }) {
+  const totalDays = summary.daysBack + 1;
+  // Clamped: availableDaysBack can exceed daysBack (more local history than
+  // was actually asked for — see MessagesSinceResult's own doc comment),
+  // but this bar only ever represents the REQUESTED window, so covered
+  // never visually exceeds 100% of it.
+  const coveredDays = Math.min(summary.availableDaysBack + 1, totalDays);
+  const coveredPct = Math.round((coveredDays / totalDays) * 100);
+
+  const tooltip = summary.complete
+    ? `Full local history available for the requested ${daysTickLabel(summary.daysBack)}.`
+    : "Element only lets a widget read room history it's already loaded locally — it can't ask the " +
+      "server for more. Use this card's Open button to jump to the room in Element, scroll back " +
+      'further there so it loads, then refresh this card.';
+
   return (
-    <Tooltip
-      title={
-        "Element only lets a widget read room history it's already loaded locally — it can't ask the " +
-        'server for more. Open this room in Element, scroll back further so it loads, then refresh this card.'
-      }
-    >
-      <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 0.5 }}>
-        ⚠️ Only {daysTickLabel(summary.availableDaysBack)} of history available locally (requested{' '}
-        {daysTickLabel(summary.daysBack)})
-      </Typography>
+    <Tooltip title={tooltip}>
+      {/* mt: 3 — deliberately generous: this sits right after the topics
+          list/summary text, and the two need to read as visually distinct
+          blocks (the actual content vs. this card's sync metadata), not
+          run together. */}
+      <Box sx={{ mt: 3 }}>
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            height: 6,
+            borderRadius: 1,
+            overflow: 'hidden',
+            bgcolor: 'action.disabledBackground',
+          }}
+        >
+          <Box sx={{ width: `${coveredPct}%`, bgcolor: 'success.main' }} />
+        </Box>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+          {coveredDays} of {totalDays} day{totalDays === 1 ? '' : 's'} synced locally
+        </Typography>
+      </Box>
     </Tooltip>
   );
 }
